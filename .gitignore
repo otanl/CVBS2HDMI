@@ -4,7 +4,7 @@ build/
 *.fs
 
 # The OSS CAD Suite: 1.8 GB, and a symlink to ../tang/.tools at that
-.tools/
+.tools
 
 # ESP-IDF build output and fetched dependencies for the colour bar generator
 tools/m5-colorbars/build/
