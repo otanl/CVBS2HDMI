@@ -80,7 +80,7 @@ module burst_nco #(
     reg [31:0] sect_r;
     reg        sect_new;
     reg [31:0] correlation_adjust;
-    reg [14:0] burst_age;
+    reg [17:0] burst_age;
 
     wire [31:0] cordic_angle;
     wire        cordic_done;
@@ -124,7 +124,7 @@ module burst_nco #(
             sect_r     <= 32'd0;
             sect_new   <= 1'b0;
             correlation_adjust <= 32'd0;
-            burst_age  <= 15'd0;
+            burst_age  <= 18'd0;
             cordic_start <= 1'b0;
             locked     <= 1'b0;
         end else begin
@@ -154,7 +154,13 @@ module burst_nco #(
             if (sample_en) begin
             phase  <= phase + inc;
             gate_d <= burst_gate;
-            if (burst_age != 15'h7fff) burst_age <= burst_age + 15'd1;
+            // 2^18 samples, about 164 lines.  15 bits -- 32767 samples, or 20.5
+            // lines -- sat just under the vertical interval, which carries no
+            // burst at all, so this timed out once per field, every field,
+            // throwing away the lock and the learned frequency sixty times a
+            // second.  On the board that left two thirds of the live frames in
+            // the monochrome fallback: 33 of 50, measured.
+            if (burst_age != 18'h3ffff) burst_age <= burst_age + 18'd1;
             else begin
                 locked <= 1'b0;
                 good_lines <= 8'd0;
@@ -170,7 +176,7 @@ module burst_nco #(
                 q_acc   <= 16'sd0;
 
                 if (mag >= MAG_MIN) begin
-                    burst_age <= 15'd0;
+                    burst_age <= 18'd0;
                     cordic_start <= 1'b1;
                     correlation_adjust <= SNAP_PER_LINE ? (SNAP_PHASE - phase - inc)
                         : ((avg_cnt == ((1 << AVG_LOG2) - 1)) ? phase_adj : 32'd0);

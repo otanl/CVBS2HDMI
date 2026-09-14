@@ -11,7 +11,7 @@ module top_ntsc_hdmi #(
     parameter       HUNT_PHASE    = 1'b0,
     parameter       SCOPE_ONLY    = 1'b0,
     parameter       FRAME_ALIGN   = 1'b1,
-    parameter       LEGACY_TIMING = 1'b0,
+    parameter       LEGACY_TIMING = 1'b1,
     parameter integer SCOPE_DIV   = 3
 ) (
     input  wire       clk27,
