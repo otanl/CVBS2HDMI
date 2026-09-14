@@ -775,10 +775,23 @@ Three things this needed, all of which had bitten before:
   twice, add twice does not fit: 125.87 MHz against the 125.94 needed. It runs
   once per line, so there is a line's worth of slack.
 
-Verified in simulation -- `sim-video` gives the same `bad_channels=0,
-max_error=17` as without it -- and **not yet on the board**, because the HDMI
-link went down and stayed down. The known-good `hdmi640` bitstream shows No
-Signal too, so that is the connector, not the design.
+Measured on the board, and it works: the median row-to-row colour difference
+inside a flat bar goes from **3.7 codes to 1.3**. Per bar the improvement is
+consistent -- 6.9 to 2.7, 9.4 to 1.5, 5.9 to 2.8 -- and `sim-video` is unchanged
+at `bad_channels=0, max_error=17`.
+
+`TRACK_P` was swept against that number: off 3.7 | 2 → 1.8 | 3 → 2.5 | 4 → 1.7
+| 6 → 12.7. Two through four are one measurement's variance apart and six is
+plainly too slow to follow the rotation, so the useful range has a floor and a
+cliff, and 4 sits in it.
+
+**Measure the artifact, not a physical quantity that stands in for it.** The
+obvious metric here was per-line chroma phase noise in degrees, and it fought
+back: high chroma gain clips, and clipping bends the angle by an amount that
+depends on the angle, so it counts as phase noise; low gain drops the
+correlation below any sensible magnitude floor. The window between the two is
+narrow. Median row-to-row colour difference has neither problem -- it is what
+the eye calls streaky, it survives clipping, and it assumes nothing about hue.
 
 ### `LEGACY_TIMING` is the right default for this source
 

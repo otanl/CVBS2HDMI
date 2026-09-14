@@ -17,7 +17,12 @@ module burst_nco #(
     // the angle, TRACK_I how much to the learned per-line step, both as right
     // shifts -- so larger means slower and quieter.
     parameter         BURST_TRACK = 1'b1,
-    parameter integer TRACK_P     = 2,
+    // Swept on the board against the streaking it is there to remove, as the
+    // median row-to-row colour difference inside a flat bar:
+    //   off 3.7 codes | P=2 1.8 | P=3 2.5 | P=4 1.7 | P=6 12.7
+    // 2 to 4 are one measurement's variance apart; 6 is plainly too slow to
+    // follow, so the useful range has a floor and a cliff and 4 sits in it.
+    parameter integer TRACK_P     = 4,
     parameter integer TRACK_I     = 5,
     parameter         THREE_LEVEL = 1'b1,
     parameter         SINE_REF = 1'b1,
