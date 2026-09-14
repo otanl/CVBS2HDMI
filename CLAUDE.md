@@ -754,6 +754,35 @@ bits, 50 of 50.**
 The watchdog is worth keeping. It just has to be longer than the longest gap a
 *valid* signal contains, and that gap is the vertical interval, not a line.
 
+### Judge the picture by counting rows, not by a chroma-noise figure
+
+`scratchpad/quality.py` classifies every row of the picture as correct, dropped
+or torn, using the one thing known about the test pattern: eight bars of
+monotonically decreasing luminance. A dropped row has no bright first bar; a
+torn row has the order broken; a noisy row has neither, which is the point --
+the three defects are counted separately instead of summed into one number.
+
+This replaced a median row-to-row colour difference, and the replacement was
+not cosmetic. That metric measures chroma noise only, and being a median it is
+robust to outliers *by construction*, so rows that are dropped or torn cannot
+move it. It preferred a tracking weight of 4 over 2 by a tenth of a code while
+the picture at 4 was visibly worse -- and it was, by ten times the torn rows.
+The eye was right and the number was measuring the wrong thing.
+
+Two cautions on reading it:
+
+- **The bottom quarter of the pattern is a grey ramp whose first step is black**,
+  so a "black row" test sampling the left of the picture scores the ramp as
+  dropped. Only the bar region means anything.
+- **The dropped figure carries real run-to-run variance** -- 2.8% and 5.9% on
+  the same build, minutes apart. The torn figure is steady, so treat a small
+  change in dropped as noise and a change in torn as signal.
+
+Pushing the frame down to move the vertical interval off the top of the picture
+(`V_TARGET` 488 to 504) made everything worse -- correct rows 97.0% to 92.6%,
+torn rows 0.2% to 4.4% -- so the black at the top is not simply the vertical
+interval sitting a few lines inside the visible area.
+
 ### Track the burst angle; do not believe each line's measurement
 
 `burst_nco` now predicts this line's burst angle from the last one plus a
