@@ -17,12 +17,23 @@ module burst_nco #(
     // the angle, TRACK_I how much to the learned per-line step, both as right
     // shifts -- so larger means slower and quieter.
     parameter         BURST_TRACK = 1'b1,
-    // Swept on the board against the streaking it is there to remove, as the
-    // median row-to-row colour difference inside a flat bar:
-    //   off 3.7 codes | P=2 1.8 | P=3 2.5 | P=4 1.7 | P=6 12.7
-    // 2 to 4 are one measurement's variance apart; 6 is plainly too slow to
-    // follow, so the useful range has a floor and a cliff and 4 sits in it.
-    parameter integer TRACK_P     = 4,
+    // 2, chosen against how many picture rows come out correct -- not against
+    // the streaking figure that first suggested 4.
+    //
+    // That first sweep used the median row-to-row colour difference, which
+    // measures chroma noise and nothing else.  Being a median it is robust to
+    // outliers by construction, so rows that are dropped or torn do not move
+    // it: it rated 4 (1.7 codes) over 2 (1.8) while the picture at 4 was
+    // visibly worse.  Counting rows instead, over ten thousand of them:
+    //
+    //           correct   dropped   wrong order
+    //   off      95.2%      3.0%        1.8%
+    //   P=2      97.0%      2.8%        0.2%
+    //   P=4      94.5%      3.6%        1.9%
+    //
+    // Tracking helps, and only at the right weight.  A tenfold difference in
+    // torn rows between 2 and 4 was entirely invisible to the first metric.
+    parameter integer TRACK_P     = 2,
     parameter integer TRACK_I     = 5,
     parameter         THREE_LEVEL = 1'b1,
     parameter         SINE_REF = 1'b1,
