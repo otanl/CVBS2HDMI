@@ -738,6 +738,43 @@ Two implementation notes worth keeping:
   whole line, so registering the sector and unwrapping it on the next sample
   costs nothing.
 
+### The burst timeout was shorter than the vertical interval
+
+`burst_nco`'s `burst_age` watchdog drops the lock -- and resets the learned
+subcarrier frequency -- when no qualifying burst has arrived for a while. It was
+15 bits: 32767 samples, or **20.5 lines**. The vertical interval carries no
+burst at all and is about 20 lines.
+
+So it timed out once per field, every field, by construction. The loop
+re-acquired sixty times a second and the picture spent most of its time in the
+monochrome fallback that `COLOUR && burst_locked` selects. Measured on the
+board: **colour held in 17 of 50 live frames; with the counter widened to 18
+bits, 50 of 50.**
+
+The watchdog is worth keeping. It just has to be longer than the longest gap a
+*valid* signal contains, and that gap is the vertical interval, not a line.
+
+### `LEGACY_TIMING` is the right default for this source
+
+The window offsets come in two sets: standard NTSC geometry measured from the
+sync leading edge (`QUALIFY` 80, burst 136..192, active from 252), and the ones
+measured on the M5 (`QUALIFY` 124, burst 240..300, active from 313).
+
+They differ because **this source has no sync step**, so the low run the
+detector qualifies on is the whole blanking interval rather than the sync pulse,
+and the trigger lands somewhere else entirely. With the standard set the picture
+rolls and tears; with `LEGACY_TIMING = 1` it sits still and every live frame
+carries colour. A source with real sync wants the standard set.
+
+### Measure against a clean tree, or diff first
+
+Two conclusions here were drawn from a bench run that also carried an *earlier,
+unrelated* edit, and both were wrong: "widening the timeout breaks sim-video"
+was really "the chroma gain changed twenty minutes ago breaks sim-video", since
+that bench checks decoded RGB against published values and a quarter of the
+gain fails it by construction. `git diff` settled it in one command -- which is
+the first thing version control paid for here.
+
 ## Captured reference data
 
 `make dumpbig-program` fills a 32768-sample buffer (about 19 consecutive lines) from a sync edge
