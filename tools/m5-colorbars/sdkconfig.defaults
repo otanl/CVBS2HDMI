@@ -1,0 +1,6 @@
+CONFIG_IDF_TARGET="esp32"
+# Panel_CVBS generates the composite waveform from a high-rate DMA stream;
+# it needs the CPU at full speed and a large enough main task stack.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_COMPILER_OPTIMIZATION_PERF=y

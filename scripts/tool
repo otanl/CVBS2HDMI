@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "$0")/.." && pwd)"
+suite_environment="${project_root}/.tools/oss-cad-suite/environment"
+
+if [[ -f "${suite_environment}" ]]; then
+    # OSS CAD Suite sets PATH and the dynamic-library search paths it needs.
+    # shellcheck disable=SC1090
+    source "${suite_environment}"
+fi
+
+tool_name="${1:?usage: scripts/tool COMMAND [ARG ...]}"
+shift
+
+if ! command -v "${tool_name}" >/dev/null 2>&1; then
+    echo "error: ${tool_name} is not installed" >&2
+    echo "run ./scripts/setup-macos.sh first" >&2
+    exit 127
+fi
+
+exec "${tool_name}" "$@"
+

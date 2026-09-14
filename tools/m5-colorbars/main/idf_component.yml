@@ -1,0 +1,5 @@
+dependencies:
+  # M5GFX is M5Stack's fork of LovyanGFX and carries the same Panel_CVBS.
+  # LovyanGFX itself is not published to the ESP component registry.
+  m5stack/m5gfx: "^0.2.0"
+  idf: ">=5.0"

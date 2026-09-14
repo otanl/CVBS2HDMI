@@ -1,0 +1,64 @@
+// Tang Nano 20K + tangADC carrier board, AD9280 capture bring-up.
+//
+// Every ADC pin below was taken from the carrier board netlist
+// (tangADC.kicad_sch / production/netlist.ipc).  The data bus is NOT in
+// physical pin order -- see the table in CLAUDE.md.
+
+// ---------------------------------------------------------------- system
+IO_LOC  "clk27" 4;
+IO_PORT "clk27" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+// ------------------------------------------------------------- AD9280 out
+// R13 33R in series, R17 10k pulldown: the ADC is unclocked unless driven.
+IO_LOC  "adc_clk" 73;
+IO_PORT "adc_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+// R14 10k pulldown: clamp is off unless driven.
+IO_LOC  "adc_clamp" 74;
+IO_PORT "adc_clamp" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+// -------------------------------------------------------------- AD9280 in
+IO_LOC  "adc_d[0]" 27;
+IO_LOC  "adc_d[1]" 28;
+IO_LOC  "adc_d[2]" 42;
+IO_LOC  "adc_d[3]" 41;
+IO_LOC  "adc_d[4]" 29;
+IO_LOC  "adc_d[5]" 30;
+IO_LOC  "adc_d[6]" 31;
+IO_LOC  "adc_d[7]" 77;
+IO_PORT "adc_d[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC  "adc_otr" 71;
+IO_PORT "adc_otr" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+// ----------------------------------------------------------- onboard I/O
+// S1 steps nothing; S1 = dump, S2 = sampling phase.  Both active low.
+IO_LOC  "btn_n[0]" 88;
+IO_PORT "btn_n[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "btn_n[1]" 87;
+IO_PORT "btn_n[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// Active-low LEDs.  Note 17..20 are also wired to J2 on the carrier board.
+IO_LOC  "led_n[0]" 15;
+IO_LOC  "led_n[1]" 16;
+IO_LOC  "led_n[2]" 17;
+IO_LOC  "led_n[3]" 18;
+IO_LOC  "led_n[4]" 19;
+IO_LOC  "led_n[5]" 20;
+IO_PORT "led_n[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+// To the onboard USB-serial bridge.
+IO_LOC  "uart_tx_pin" 69;
+IO_PORT "uart_tx_pin" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;

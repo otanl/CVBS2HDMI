@@ -1,0 +1,58 @@
+// Tang Nano 20K onboard HDMI connector.
+//
+// These are TRUE LVDS pairs on this device, so IO_TYPE is LVDS25 and the RTL
+// instantiates TLVDS_OBUF.  This differs from the Tang Nano 9K, whose HDMI
+// pins are emulated LVDS (LVDS25E + ELVDS_OBUF) -- Apicula checks the pin
+// class and refuses the wrong one.
+//
+// Sipeed's Gowin-EDA example names one port with both pin numbers
+// (IO_LOC "O_tmds_clk_p" 33,34;) and lets the tool infer the negative pin.
+// The open-source flow does not infer it, so both halves are named here.
+// Apicula requires P on the IOBA pin and N on the IOBB pin: 33/34, 35/36,
+// 37/38, 39/40 in that order.
+//
+// Do NOT add DRIVE= or BANK_VCCIO= to these lines.  Sipeed's Gowin-EDA
+// constraints carry DRIVE=3.5 BANK_VCCIO=3.3 and copying that here is what
+// stopped the link working: Apicula's own reference (examples/tangnano20k.cst
+// in the Apicula tree, which drives a working DVI example on this board) uses
+// only IO_TYPE and PULL_MODE, and adding the extra attributes produces a
+// bitstream the sink will not lock to.
+
+IO_LOC  "clk27" 4;
+IO_PORT "clk27" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC  "tmds_clk_p" 33;
+IO_PORT "tmds_clk_p" IO_TYPE=LVDS25 PULL_MODE=NONE;
+IO_LOC  "tmds_clk_n" 34;
+IO_PORT "tmds_clk_n" IO_TYPE=LVDS25 PULL_MODE=NONE;
+
+IO_LOC  "tmds_d_p[0]" 35;
+IO_PORT "tmds_d_p[0]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+IO_LOC  "tmds_d_n[0]" 36;
+IO_PORT "tmds_d_n[0]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+
+IO_LOC  "tmds_d_p[1]" 37;
+IO_PORT "tmds_d_p[1]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+IO_LOC  "tmds_d_n[1]" 38;
+IO_PORT "tmds_d_n[1]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+
+IO_LOC  "tmds_d_p[2]" 39;
+IO_PORT "tmds_d_p[2]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+IO_LOC  "tmds_d_n[2]" 40;
+IO_PORT "tmds_d_n[2]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+
+IO_LOC  "led_n[0]" 15;
+IO_LOC  "led_n[1]" 16;
+IO_LOC  "led_n[2]" 17;
+IO_LOC  "led_n[3]" 18;
+IO_LOC  "led_n[4]" 19;
+IO_LOC  "led_n[5]" 20;
+IO_PORT "led_n[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_n[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+IO_LOC  "uart_tx_pin" 69;
+IO_PORT "uart_tx_pin" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
