@@ -12,6 +12,13 @@ module burst_nco #(
     parameter integer KI_SHIFT = 6,
     parameter integer LOCK_LINES = 32,
     parameter integer MAG_MIN    = 64,
+    // Burst-angle tracking: blend each line's measurement into a prediction
+    // instead of taking it raw.  TRACK_P is how much of the error to apply to
+    // the angle, TRACK_I how much to the learned per-line step, both as right
+    // shifts -- so larger means slower and quieter.
+    parameter         BURST_TRACK = 1'b1,
+    parameter integer TRACK_P     = 2,
+    parameter integer TRACK_I     = 5,
     parameter         THREE_LEVEL = 1'b1,
     parameter         SINE_REF = 1'b1,
     parameter integer AVG_LOG2  = 2,
@@ -80,6 +87,24 @@ module burst_nco #(
     reg [31:0] sect_r;
     reg        sect_new;
     reg [31:0] correlation_adjust;
+    reg [31:0] burst_step;      // angle advance per line, learned
+    reg        have_step, have_prev;
+    // Registered a clock before it is used.  The chain -- add the correlation
+    // adjust, subtract the prediction, shift twice, add twice -- does not fit
+    // in one cycle at 126 MHz: it came in at 125.87 against the 125.94 needed.
+    // There is a whole line before the answer matters, so the split is free.
+    reg  [31:0] track_meas;
+    reg         track_valid;
+    wire [31:0] track_pred = burst_off + burst_step;
+    wire signed [31:0] track_err = $signed(track_meas - track_pred);
+    // Evaluate the shifts in a signed context and only then add them to the
+    // unsigned accumulators.  Inline, `track_pred + (track_err >>> TRACK_P)`
+    // is an unsigned expression -- track_pred is unsigned -- so the arithmetic
+    // right shift silently becomes a logical one and a negative error arrives
+    // as a number near 2^32.  Third time in this design; see also the loop
+    // filter's freq_adj and the note on vs_seen.
+    wire signed [31:0] track_p_adj = track_err >>> TRACK_P;
+    wire signed [31:0] track_i_adj = track_err >>> TRACK_I;
     reg [17:0] burst_age;
 
     wire [31:0] cordic_angle;
@@ -124,6 +149,10 @@ module burst_nco #(
             sect_r     <= 32'd0;
             sect_new   <= 1'b0;
             correlation_adjust <= 32'd0;
+            track_meas <= 32'd0; track_valid <= 1'b0;
+            burst_step <= 32'd0;
+            have_step  <= 1'b0;
+            have_prev  <= 1'b0;
             burst_age  <= 18'd0;
             cordic_start <= 1'b0;
             locked     <= 1'b0;
@@ -144,11 +173,48 @@ module burst_nco #(
                 sect_r   <= cordic_angle;
                 sect_new <= 1'b1;
             end else if (sect_new) begin
-                sect_new  <= 1'b0;
-                // Burst and active chroma share the same phase. Folding this
-                // angle modulo 180 degrees reverses both colour components.
-                // Include any PLL step made after measuring the correlation.
-                burst_off <= sect_r + correlation_adjust;
+                sect_new   <= 1'b0;
+                // Stage one: settle the measurement.  Burst and active chroma
+                // share the same phase, and any PLL step made after the
+                // correlation has to be folded in here.
+                track_meas  <= sect_r + correlation_adjust;
+                track_valid <= 1'b1;
+            end else if (track_valid) begin
+                track_valid <= 1'b0;
+                // Stage two: track the burst angle rather than believing each
+                // line's measurement outright.
+                //
+                // The angle is not random from line to line -- it advances by a
+                // nearly constant step, because the source's subcarrier and
+                // line rate are in a fixed ratio.  124.8 degrees per line on
+                // this one, where a source honouring fsc = 227.5 fh would step
+                // 180.  So predict from the last angle plus the learned step
+                // and blend the measurement in, rather than replacing with it:
+                // noise falls and the systematic rotation is still followed.
+                //
+                // The subtraction is modular, so track_err is the shortest way
+                // round between predicted and measured with no wrapping logic.
+                // That is the one place 32-bit phase arithmetic is a gift.
+                //
+                // Split across two clocks because the whole chain -- add the
+                // adjust, subtract the prediction, shift twice, add twice --
+                // came in at 125.87 MHz against the 125.94 required.  There is
+                // a line's worth of clocks spare before the answer matters.
+                if (BURST_TRACK && have_step) begin
+                    burst_off  <= track_pred + track_p_adj;
+                    burst_step <= burst_step + track_i_adj;
+                end else if (have_prev) begin
+                    // The step is the difference between two consecutive
+                    // angles, so it needs two of them.  Seeding it from one
+                    // makes the step the angle itself, and the loop then has to
+                    // unwind a whole turn of wrong prediction.
+                    burst_off  <= track_meas;
+                    burst_step <= track_meas - burst_off;
+                    have_step  <= 1'b1;
+                end else begin
+                    burst_off <= track_meas;
+                    have_prev <= 1'b1;
+                end
             end
 
             if (sample_en) begin
@@ -164,6 +230,8 @@ module burst_nco #(
             else begin
                 locked <= 1'b0;
                 good_lines <= 8'd0;
+                have_step <= 1'b0;   // relearn the step after a dropout
+                have_prev <= 1'b0;
                 err_sum <= 20'sd0;
                 avg_cnt <= 8'd0;
                 inc <= INC_NOM;

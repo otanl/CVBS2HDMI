@@ -754,6 +754,32 @@ bits, 50 of 50.**
 The watchdog is worth keeping. It just has to be longer than the longest gap a
 *valid* signal contains, and that gap is the vertical interval, not a line.
 
+### Track the burst angle; do not believe each line's measurement
+
+`burst_nco` now predicts this line's burst angle from the last one plus a
+learned per-line step, and blends the measurement into that rather than taking
+it raw. The step is real and nearly constant -- 124.8 degrees per line on this
+source, 180 on one that honours fsc = 227.5 fh -- so tracking it costs nothing
+in following the rotation and buys a square-root in noise.
+
+Three things this needed, all of which had bitten before:
+
+- **The step needs two measurements to seed.** Deriving it from one makes the
+  step equal to the angle, and the loop then has to unwind a whole turn of wrong
+  prediction. Hence `have_prev` before `have_step`.
+- **`track_pred + (track_err >>> TRACK_P)` evaluates unsigned**, because
+  `track_pred` is, so the arithmetic shift becomes logical and a negative error
+  arrives as a number near 2^32. Third occurrence in this design. Compute the
+  shifts into signed wires first.
+- **Split it across two clocks.** Add the adjust, subtract the prediction, shift
+  twice, add twice does not fit: 125.87 MHz against the 125.94 needed. It runs
+  once per line, so there is a line's worth of slack.
+
+Verified in simulation -- `sim-video` gives the same `bad_channels=0,
+max_error=17` as without it -- and **not yet on the board**, because the HDMI
+link went down and stayed down. The known-good `hdmi640` bitstream shows No
+Signal too, so that is the connector, not the design.
+
 ### `LEGACY_TIMING` is the right default for this source
 
 The window offsets come in two sets: standard NTSC geometry measured from the
