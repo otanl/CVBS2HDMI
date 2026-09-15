@@ -1132,87 +1132,69 @@ does not survive.
 Colour bars are vertical, so **one line contains all eight colours** — there is no need for the
 long capture at all.
 
-## The hardware picture metric cannot currently resolve an RTL change
-
-This retires an entire line of investigation, including several conclusions
-recorded earlier in this file, and it is the most expensive thing learned so far.
+## Measuring the picture: take the second capture, not the first
 
 `scripts/video_quality.py` classifies rows of a 120-frame capture as correct,
-dropped or wrong-order.  It is a good metric -- it is stable to about one point
-across repeated captures of one bitstream.  What it is *not* stable to is
-rebuilding.  Measured in a single session, same board, same source, same
-`NTSC_SEED`:
+dropped or wrong-order.  It resolves an RTL change perfectly well -- but only if
+the capture is taken the right way, and getting that wrong invented a whole
+false conclusion here before it was caught.
 
-| build | correct | wrong-order |
-|-------|---------|-------------|
-| HEAD | 86.5%, 87.3% | 3.5%, 2.2% |
-| HEAD RTL, seed 11 | 55.4% | 16.3% |
-| HEAD RTL, seed 19 | 56.0% | 16.5% |
-| a build **logically identical to HEAD** on the M5 path | 68.9%, 71.1%, 74.2% | ~18% |
-
-The last row is the one that matters.  Every behavioural difference was gated
-off with `LEGACY_TIMING`, so that build decodes this source with exactly HEAD's
-logic -- and it measures thirteen points below HEAD.  **Build-to-build spread is
-about 30 points; a real RTL effect would have to be larger than that to be
-visible, and none of the ones under test are.**
-
-So the bisection that produced the table below was measuring placement, not
-logic, and its conclusion -- "HEAD's `burst_nco.v` beats every variant" -- is
-withdrawn:
-
-| configuration | correct | wrong-order |
-|---|---|---|
-| HEAD | 86.5% / 87.3% | 3.5% / 2.2% |
-| gap invalidation + product pipelining | 77.1% | 11.2% |
-| product pipelining only | 72.9% | 14.9% |
-| gap invalidation only | 69.4% | 18.5% |
-
-Each change alone appearing worse than both together should have been the tell:
-that pattern has no causal reading, and it is what placement noise looks like.
-
-**Until this is fixed, decide RTL questions in simulation.**  `make test` runs
-fifteen asserting testbenches and can tell these changes apart; the board cannot.
-
-### Discard the first capture after programming
-
-Programming drops the HDMI link, and the sink, the capture card and the
-vertical servo all have to re-acquire.  The first 120-frame capture taken
-afterwards is systematically low, and by enough to invent an effect:
+**Programming drops the HDMI link, and the first capture afterwards reads
+systematically low** while the sink, the capture card and the vertical servo
+re-acquire:
 
 | | correct |
 |---|---|
 | first capture after programming | 56.7% |
 | second, third, fourth | 64.7%, 65.1%, 64.2% |
 
-Eight points, on one bitstream that did not change between them.  A seed sweep
-that programs and immediately measures compares four biased numbers -- which is
-exactly what was done here once.  Take two captures and keep the second.
+Eight points on an unchanged bitstream.  Take two captures and keep the second.
 
-This is separate from the build-to-build spread above and does not explain it:
-the logically-identical build was measured three times, settled, and still read
-thirteen points below HEAD.
+With that done the instrument is good.  Five placement seeds of one design
+spread three points (64.8..67.8%), and rebuilding an old revision reproduces
+its earlier figure to within two (84.5% now against 86.5/87.3% hours before).
 
-### The suspect: an unconstrained clock crossing
+A retracted claim, recorded because the reasoning was seductive: an earlier
+pass through this concluded that build-to-build spread was *thirty* points and
+that the metric could not resolve RTL at all.  Every number behind that was a
+first-capture-after-programming.  A seed sweep that programs and immediately
+measures compares four equally biased numbers, and the bias is large enough to
+swamp exactly the effects being looked for.  **The instrument was fine; the
+protocol was not.**
 
-`constraints/tangnano20k_ntsc.sdc` constrains all three clocks and every build
-passes.  But nextpnr only *reports* cross-domain delay, it does not close it,
-and that number moves with placement while the picture moves with it:
+Do still check the reported frequency before believing a measurement:
+`--freq`/`--sdc` does not stop a build being programmed, and a seed that reports
+`FAIL at 125.94 MHz` still produces a `.fs`.
 
-    Max delay posedge serial_clk -> posedge pixel_clk : 18.61 ns
-    Max delay posedge serial_clk -> posedge pixel_clk : 22.19 ns
+### Do not disturb the burst phase to fix the vertical interval
 
-The pixel period is 39.68 ns, so 22 ns is over half of it on a path nothing
-checks.  `top_ntsc_hdmi.v` crosses 126 MHz to 25.2 MHz in two places --
-`video_line_store` (`wr_clk`/`rd_clk`, plus `rd_line_end`) and the scope dump
-buffer.  This project has already found two CDC bugs by hand, both of the same
-shape: a pulse generated in one domain and consumed in the other.  Look there
-first, and treat any multi-bit value crossing without a handshake as the bug
-until proved otherwise.
+`burst_nco` tracks the per-line burst angle and blends each measurement into a
+prediction at quarter weight, which is where its noise advantage comes from --
+median row-to-row colour difference 3.7 codes against 1.3.  The vertical
+interval carries no burst for about twenty lines, so the prediction free-runs
+and the first line back is up to 38 degrees out.  `sim-tracking` asserts this.
 
-Note also that `--freq`/`--sdc` does not stop a build being programmed: a seed
-that reports `FAIL at 125.94 MHz` still produces a `.fs`.  Check the reported
-frequency before believing a measurement.
+Two remedies were built and both cost seventeen points of good rows on the
+board, with seven times as many out-of-order rows:
 
+| | correct | wrong-order |
+|---|---|---|
+| no gap handling | 84.5%, 86.0% | 2.8%, 3.2% |
+| gap invalidates the learned step | 67.8% | 20.3% |
+| gap snaps the phase, keeps the step | 67.3% | 20.9% |
+
+That the *second* one is no better is the informative part.  It preserves
+everything the first throws away, so the damage is not the step being
+re-learned -- it is moving `burst_off` at all on a gap.  A gap long enough to
+fire is not rare on this source: the burst is 19 codes against a spec 40, so
+individual lines fall under `MAG_MIN` in the middle of active video, and each
+misfire replaces an average over a field with one noisy line's measurement.
+Widening the window to five lines does not help; it still fires.
+
+So the mechanism stays in `burst_nco` with its test, and `ntsc_capture` passes
+`BURST_GAP_SAMPLES` large enough to disable it.  Four bad lines per field is
+cheaper than what fixing them costs everywhere else.  A source with a
+full-amplitude burst would not misfire and should turn it back on.
 
 ## Hardware (Verified against `../tangADC.zip` → `tangADC.kicad_sch` + `production/netlist.ipc`)
 

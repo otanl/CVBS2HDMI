@@ -111,6 +111,7 @@ module burst_nco #(
     reg [31:0] correlation_adjust;
     reg [31:0] burst_step;      // angle advance per line, learned
     reg        have_step, have_prev;
+    reg        gap_resync;
     // Registered a clock before it is used.  The chain -- add the correlation
     // adjust, subtract the prediction, shift twice, add twice -- does not fit
     // in one cycle at 126 MHz: it came in at 125.87 against the 125.94 needed.
@@ -176,6 +177,7 @@ module burst_nco #(
             have_step  <= 1'b0;
             have_prev  <= 1'b0;
             burst_age  <= 18'd0;
+            gap_resync <= 1'b0;
             cordic_start <= 1'b0;
             locked     <= 1'b0;
         end else begin
@@ -222,7 +224,10 @@ module burst_nco #(
                 // adjust, subtract the prediction, shift twice, add twice --
                 // came in at 125.87 MHz against the 125.94 required.  There is
                 // a line's worth of clocks spare before the answer matters.
-                if (BURST_TRACK && have_step) begin
+                if (gap_resync) begin
+                    burst_off  <= track_meas;   // phase only; step survives
+                    gap_resync <= 1'b0;
+                end else if (BURST_TRACK && have_step) begin
                     burst_off  <= track_pred + track_p_adj;
                     burst_step <= burst_step + track_i_adj;
                 end else if (have_prev) begin
@@ -258,20 +263,24 @@ module burst_nco #(
                 avg_cnt <= 8'd0;
                 inc <= INC_NOM;
             end
-            // Drop the step prediction across a gap, well before the watchdog.
+            // Snap the phase after a gap, but keep the learned step.
             //
-            // The tracker extrapolates burst_off by burst_step every line.  The
-            // watchdog above only intervenes after 164 lines, so across the
-            // ~20-line vertical interval -- which carries no burst at all --
-            // the predictor ran open loop and arrived at the first returning
-            // line up to 38 degrees out, taking four lines to pull back in.
-            // That is the coloured tearing at the top of the picture.  Holding
-            // a step measured 20 lines ago is worse than admitting the gap and
-            // re-measuring, so anything past a line and a half re-learns.
-            if (burst_age == TRACK_GAP_SAMPLES[17:0]) begin
-                have_step <= 1'b0;
-                have_prev <= 1'b0;
-            end
+            // The tracker extrapolates burst_off by burst_step every line, and
+            // the vertical interval carries no burst for about twenty of them,
+            // so the first line back was up to 38 degrees out.
+            //
+            // Discarding have_step there is the obvious remedy and it is wrong:
+            // the next measurement then rebuilds the step from a single line's
+            // difference, throwing away an estimate averaged over a field.  On
+            // this source that is not rare.  The burst is 19 codes against a
+            // spec 40, so individual lines fall under MAG_MIN in the middle of
+            // active video, and re-learning on each of those cost 17 points of
+            // good rows and left seven times as many out of order.
+            //
+            // The step is a property of the source -- 124.8 degrees a line here,
+            // 180 on a standard one -- and a gap is no evidence against it.
+            // Only the absolute phase goes stale, so only that is re-measured.
+            if (burst_age == TRACK_GAP_SAMPLES[17:0]) gap_resync <= 1'b1;
 
             if (gate_fall) begin
                 burst_i <= i_scaled;

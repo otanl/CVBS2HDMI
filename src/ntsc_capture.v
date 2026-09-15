@@ -12,13 +12,15 @@ module ntsc_capture #(
     // Compatibility with the old, measured blanking-relative M5 windows.
     // Normal operation counts from the sync leading edge at 25.2 MSPS.
     parameter         LEGACY_TIMING = 1'b0,
-    // Forwarded to burst_nco.  On: it takes the first line back from vertical
-    // blanking from 38 degrees of phase error to 4, which sim-tracking asserts.
-    // It measured worse on the board -- and so did a build made logically
-    // identical to the one it was compared against, by 13 points.  The hardware
-    // metric cannot resolve an RTL change at all right now; see the
-    // build-variance note in CLAUDE.md.  Simulation can, so simulation decides.
-    parameter integer BURST_GAP_SAMPLES = 8010,
+    // Forwarded to burst_nco, large enough to disable its gap handling.
+    //
+    // That handling is correct -- it takes the first line back from vertical
+    // blanking from 38 degrees of phase error to 4, which sim-tracking asserts
+    // -- and on this source it costs 17 points of good rows and seven times the
+    // out-of-order rows, because a 19-code burst drops under MAG_MIN in the
+    // middle of active video and each misfire throws away a field's averaging.
+    // See CLAUDE.md.  A source with a full-amplitude burst should enable it.
+    parameter integer BURST_GAP_SAMPLES = 262142,
     parameter         CLAMP_ENABLE  = 1'b0,
     parameter integer BP_START      = LEGACY_TIMING ? 305 : 200,
     parameter integer BP_END        = BP_START + 32,
