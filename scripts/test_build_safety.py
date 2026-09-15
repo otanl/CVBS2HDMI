@@ -6,6 +6,19 @@ import unittest
 
 
 class BuildSafetyTest(unittest.TestCase):
+    def test_scope_freerun_selects_distinct_logic_and_artifacts(self):
+        root = Path(__file__).resolve().parents[1]
+        for freerun in (0, 1):
+            result = subprocess.run(
+                ["make", "--no-print-directory", "-Bn", "ntsc-scope",
+                 "NTSC_SCOPE_PHASE=2", "NTSC_SCOPE_RAMP=3",
+                 f"NTSC_SCOPE_FREERUN={freerun}"], cwd=root,
+                capture_output=True, text=True, check=True)
+            self.assertIn(f"-set SCOPE_FREERUN {freerun}", result.stdout)
+            stem = f"top_ntsc_hdmi_scope_p2r3f{freerun}"
+            for suffix in (".json", "_pnr.json", ".fs"):
+                self.assertIn(stem + suffix, result.stdout)
+
     def test_failed_target_is_removed_and_retried(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(prefix="tangadc-make-") as directory:

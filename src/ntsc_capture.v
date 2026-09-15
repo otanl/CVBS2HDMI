@@ -49,6 +49,16 @@ module ntsc_capture #(
     parameter integer CLAMP_FORCE = 0,       // 1 = hold the clamp on, AIN -> ~code 80
     parameter integer SCOPE_FREERUN = 0,     // 1 = dump without needing a detected line
     parameter integer CHROMA_SHIFT = 0,
+    // Halve the luma gain and quarter the chroma gain when the input is large.
+    //
+    // The gains were constants chosen for a source whose blanking-to-white span
+    // is 130 codes.  When the span grew to 177 the same constants map white to
+    // 498, the top of the range folds together, and the bars stop being ordered:
+    // 50.1% correct rows, 55.7% of channel samples saturated.  Choosing by the
+    // measured span instead gives 100.0% correct, 0.0% wrong-order and 0.8%
+    // saturated on the same signal, and leaves the 130-code case exactly as it
+    // was -- which is what keeps sim-video's published RGB values valid.
+    parameter integer AUTO_GAIN = 1,
     parameter         COLOUR       = 1'b1
 ) (
     input  wire        clk_cap,        // TMDS serial clock, 126 MHz
@@ -365,7 +375,11 @@ module ntsc_capture #(
     wire [15:0] prod = (gain_sel == 2'd0) ? m45  :
                        (gain_sel == 2'd1) ? m64  :
                        (gain_sel == 2'd2) ? m96  : m128;
-    wire [15:0] scaled    = prod >> LUMA_SHIFT;
+    wire [7:0]  white_span = (f_max > black) ? (f_max - black) : 8'd1;
+    wire        wide_input = (AUTO_GAIN != 0) && (white_span > 8'd150);
+    // Two constant shifts and a mux, not a variable shift.
+    wire [15:0] scaled    = wide_input ? (prod >> (LUMA_SHIFT + 1))
+                                       : (prod >> LUMA_SHIFT);
     wire [7:0]  luma      = (scaled > 16'd255) ? 8'd255 : scaled[7:0];
 
     // Seven samples times the three-level mixer's fundamental gain
@@ -393,8 +407,10 @@ module ntsc_capture #(
             u_s <= 0; v_s <= 0; luma_r <= 0; luma_matrix <= 0;
             v73_r <= 0; u101_r <= 0; v149_r <= 0; u130_r <= 0;
         end else begin
-            u_s <= ug >>> (12 + CHROMA_SHIFT);
-            v_s <= vg >>> (12 + CHROMA_SHIFT);
+            u_s <= wide_input ? (ug >>> (12 + CHROMA_SHIFT + 2))
+                             : (ug >>> (12 + CHROMA_SHIFT));
+            v_s <= wide_input ? (vg >>> (12 + CHROMA_SHIFT + 2))
+                             : (vg >>> (12 + CHROMA_SHIFT));
             luma_r <= luma;
             v73_r <= v73; u101_r <= u101; v149_r <= v149; u130_r <= u130;
             luma_matrix <= luma_r;

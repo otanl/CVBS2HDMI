@@ -88,8 +88,10 @@ module burst_nco #(
     wire signed [15:0] q_scaled = q_acc >>> 6;
     wire signed [7:0] lut_cosine, lut_sine;
     reg signed [7:0] i_weight, q_weight;
+    reg signed [8:0] sample_centred;
+    reg signed [7:0] sample_i_weight, sample_q_weight;
     reg signed [17:0] i_product, q_product;
-    reg product_pending;
+    reg input_pending, product_pending;
     chroma_sincos reference_lut (.phase(phase[31:26]),
                                 .cosine(lut_cosine), .sine(lut_sine));
     reg               gate_d;
@@ -161,6 +163,8 @@ module burst_nco #(
             i_acc      <= 16'sd0;
             q_acc      <= 16'sd0;
             i_weight <= 0; q_weight <= 0;
+            sample_centred <= 0; sample_i_weight <= 0; sample_q_weight <= 0;
+            input_pending <= 0;
             i_product <= 0; q_product <= 0; product_pending <= 0;
             burst_i    <= 16'sd0;
             burst_q    <= 16'sd0;
@@ -183,10 +187,20 @@ module burst_nco #(
         end else begin
             i_weight <= SINE_REF ? lut_cosine : (ci_pos ? 8'sd64 : ci_neg ? -8'sd64 : 8'sd0);
             q_weight <= SINE_REF ? lut_sine : (cq_pos ? 8'sd64 : cq_neg ? -8'sd64 : 8'sd0);
-            product_pending <= sample_en && burst_gate;
+            // Subtraction plus a LUT multiplier missed 126 MHz (118.4 MHz
+            // routed). There are five clocks per sample, so separate them.
+            // Latch BOTH operands on the original strobe: continuously
+            // registering centred alone would select a different ADC phase.
+            input_pending <= sample_en && burst_gate;
+            product_pending <= input_pending;
             if (sample_en && burst_gate) begin
-                i_product <= centred * i_weight;
-                q_product <= centred * q_weight;
+                sample_centred <= centred;
+                sample_i_weight <= i_weight;
+                sample_q_weight <= q_weight;
+            end
+            if (input_pending) begin
+                i_product <= sample_centred * sample_i_weight;
+                q_product <= sample_centred * sample_q_weight;
             end
             if (product_pending) begin
                 i_acc <= i_acc + {{6{i_product[17]}}, i_product};

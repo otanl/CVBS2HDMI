@@ -70,6 +70,20 @@ python3 scripts/scope_trace.py build/scope_new_012.png --trace-only --require-mo
 make ntsc-program                   # 通常の映像表示へ戻す
 ```
 
+同期が見つからない状態も調べる場合は、同期を待たない生ADC取得を使います。
+
+```sh
+make ntsc-scope-program NTSC_SCOPE_RAMP=3 NTSC_SCOPE_FREERUN=1
+./scripts/live_capture.sh build/raw_free_new 12 3 --scope-mode 3 --phase 2
+python3 scripts/scope_trace.py build/raw_free_new_012.png --trace-only --require-mode 3
+```
+
+通常の同期待ち取得では、同期を検出できないとバッファが一度も更新されず、
+未取得のゼロを実測値と誤認する場合があります。`NTSC_SCOPE_FREERUN=1` は
+約66 msごとに同期とは独立して取得します。ビルド名も設定別に分けています。
+`make sim-scope-freerun` で、無同期入力でも全2048点を取得・再取得できることと、
+従来の同期待ちモードでは取得しないことを検証できます。
+
 640×480、横3サンプル/画素の波形を対象に、赤・白のトレースの縦位置から値を復元します。
 診断用ビルドは全256コードが見える縦軸です。通常ビルドのS1表示を読む場合は
 `--legacy-scale`を指定します（こちらは約150以上が上部の診断表示に隠れます）。

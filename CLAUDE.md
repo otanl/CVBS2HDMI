@@ -822,6 +822,41 @@ correlation below any sensible magnitude floor. The window between the two is
 narrow. Median row-to-row colour difference has neither problem -- it is what
 the eye calls streaky, it survives clipping, and it assumes nothing about hue.
 
+### The luma and chroma gains were constants, and the source's amplitude moved
+
+This is the largest single improvement measured in this project: **50.1% correct
+rows to 100.0%**, on the same signal, in one change.
+
+The gains were fixed for a source whose blanking-to-white span is 130 codes.
+When the span grew to 177 -- which happened on its own, along with the sync step
+described above -- the same constants map white to 498.  The top of the range
+folds together, the bars stop being ordered, and the picture measures:
+
+| | correct | dropped | wrong-order | saturated |
+|---|---|---|---|---|
+| fixed gains, 177-code span | 50.1% | 0.0% | 49.9% | 55.7% |
+| luma gain halved | 85.1% | 0.0% | 14.9% | 16.8% |
+| luma halved, chroma quartered | **100.0%** | **0.0%** | **0.0%** | 0.8% |
+
+Note what the failure looked like: **no dropped rows and colour on every frame**.
+Sync and burst were locking perfectly.  Only the order of the bars was wrong,
+because clipping had squashed the bright end flat.  A picture can be completely
+unusable with every timing measurement reading healthy.
+
+`AUTO_GAIN` now picks the gain from `f_max - black` rather than trusting a
+constant, with the threshold at a 150-code span.  That leaves the 130-code case
+bit-identical -- which is what keeps `sim-video`'s published RGB values valid,
+and it still passes with the same `max_error=17` -- while the board gets the
+halved luma and quartered chroma.  Measured through the automatic path: 100.00%
+and 99.98% correct, zero dropped, zero wrong-order, colour on 60 frames of 60.
+
+Two shifts and a mux, not a variable shift, so it costs nothing on the timing
+path.
+
+**Do not calibrate anything about chroma phase against a clipped picture.**  The
+earlier note saying so was right, and this is the same trap at a larger scale:
+half the rows were out of order and the cause was entirely a gain constant.
+
 ### With real sync present, the standard geometry gives the best picture yet
 
 Late in a session the source began emitting a sync step -- the waveform floor at

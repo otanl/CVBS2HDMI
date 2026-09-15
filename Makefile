@@ -376,14 +376,17 @@ ntsc-standard-program: $(NTSC_STANDARD_BITSTREAM)
 # Start in the existing HDMI oscilloscope view, without relying on UART.
 NTSC_SCOPE_PHASE ?= 2
 NTSC_SCOPE_RAMP ?= 0
-NTSC_SCOPE_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP).json
-NTSC_SCOPE_PNR := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP)_pnr.json
-NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP).fs
+# Free-running acquisition must not depend on the sync path under diagnosis.
+# Include the switch in filenames so a changed option cannot reuse old logic.
+NTSC_SCOPE_FREERUN ?= 0
+NTSC_SCOPE_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP)f$(NTSC_SCOPE_FREERUN).json
+NTSC_SCOPE_PNR := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP)f$(NTSC_SCOPE_FREERUN)_pnr.json
+NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP)f$(NTSC_SCOPE_FREERUN).fs
 .PHONY: ntsc-scope ntsc-scope-program
 ntsc-scope: $(NTSC_SCOPE_BITSTREAM)
 
 $(NTSC_SCOPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) -set SCOPE_FREERUN $(NTSC_SCOPE_FREERUN) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
 
 $(NTSC_SCOPE_PNR): $(NTSC_SCOPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -405,7 +408,22 @@ check-tools:
 	@echo "All required tools are available."
 
 .PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun test-quality
+
+.PHONY: sim-burst-products
+sim-burst-products: | $(BUILD_STAMP)
+	@for sine in 0 1; do \
+		$(TOOL) iverilog -g2012 -s burst_products_tb -Pburst_products_tb.SINE_REF=$$sine \
+			-o $(BUILD_DIR)/burst_products_tb src/burst_nco.v src/cordic_atan.v \
+			src/chroma_sincos.v sim/burst_products_tb.v && \
+		$(TOOL) vvp $(BUILD_DIR)/burst_products_tb || exit $$?; \
+	done
+
+.PHONY: sim-scope-freerun
+sim-scope-freerun: | $(BUILD_STAMP)
+	$(TOOL) iverilog -g2012 -s scope_freerun_tb -o $(BUILD_DIR)/scope_freerun_tb \
+		$(CAPTURE_SIM_RTL) sim/scope_freerun_tb.v
+	$(TOOL) vvp $(BUILD_DIR)/scope_freerun_tb
 
 .PHONY: sim-scope-header
 sim-scope-header: | $(BUILD_STAMP)
