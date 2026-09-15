@@ -844,11 +844,17 @@ driven from an internal 1-bit DAC.  That reference describes a *dock* and says
 the conditioning components are added externally, so it does not by itself prove
 anything is attached on the bare module.  Pin 31 has not been identified.
 
-**The test that would settle it**, and it needs the carrier board off: build for
-the bare Tang with `PULL_MODE=UP` in the `.cst` -- not by patching a routed
-netlist, whose effect could not be confirmed -- and read the pins with
-`SCOPE_FREERUN`.  Free pins must read 0xFF.  Any bit that does not is held by
-something on the module, and the carrier board picked the wrong pins.
+**That test was run, and it does not work.**  Built for the bare module with
+`PULL_MODE=UP` in the `.cst` and read through `SCOPE_FREERUN`, the answers
+contradict themselves: pull-up reads 0x80, pull-down reads 0x02.  A pull-down
+cannot leave a bit at 1.00.  So the scope path does not read pin state on a
+board with no signal, for a reason not yet found -- the identity header was
+suspected and cleared, since the extractor already starts below it at row 216.
+
+Do not repeat it without first making the reading testable: drive a known
+pattern onto those pins from the FPGA and confirm the scope reports it back.
+Reading pins with an instrument that has never been checked against a known
+answer on *those* pins is how the last three attempts went wrong.
 
 Until then the cost is known and bounded: the converter delivers 24 of 256
 codes, and the picture still measures 100% correct rows, because the luma
