@@ -207,8 +207,10 @@ sim-burst: | $(BUILD_STAMP)
 		-Pburst_nco_tb.LINES=2000 src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/burst_nco_tb.v
 	$(TOOL) vvp build/burst_nco_tb
 
-sim-capture-weak:
-	@$(MAKE) sim-capture SIMARGS="-Pntsc_capture_tb.WEAK=1 $(SIMARGS)"
+sim-capture-weak: | $(BUILD_STAMP)
+	$(TOOL) iverilog -g2012 -s ntsc_capture_tb -Pntsc_capture_tb.WEAK=1 $(SIMARGS) \
+		-o $(BUILD_DIR)/ntsc_capture_weak_tb $(CAPTURE_SIM_RTL) sim/ntsc_capture_tb.v
+	$(TOOL) vvp $(BUILD_DIR)/ntsc_capture_weak_tb
 
 sim-badphase: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s adc_probe_tb -Padc_probe_tb.PHASE=1 \
@@ -289,7 +291,7 @@ $(HDMI640_BITSTREAM): $(HDMI640_PNR)
 hdmi640-program: $(HDMI640_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
 
-# --- Step 2: NTSC in, monochrome HDMI out ---------------------------------
+# --- NTSC-J in, colour 640x480p HDMI out ---------------------------------
 NTSC_TOP       := top_ntsc_hdmi
 NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/line_buffer.v \
                   src/video_line_store.v src/chroma_sincos.v \
@@ -316,11 +318,9 @@ $(NTSC_CST): $(PROBE_CONSTRAINTS) $(HDMI_CONSTRAINTS) | $(BUILD_STAMP)
 $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
 
-# The 135 MHz capture domain lands within a few percent of the limit, so the
-# placer's seed decides whether a build passes.  3 is one that does; if a
-# change pushes it over again, try others rather than assuming a real problem.
-# NTSC_SEED picks the placement seed; `make ntsc NTSC_SEED=3` retries a marginal
-# build rather than leaving one that misses by a fraction of a percent.
+# The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
+# Placement affects margin; always require the final routed timing check.
+# A different seed requires rebuilding the PNR target (make -B ntsc).
 NTSC_SEED ?= 3
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
@@ -347,6 +347,28 @@ ntsc-run: $(NTSC_BITSTREAM)
 ntsc-flash: $(NTSC_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) -f $<
 
+# Keep standard sync geometry separate from the measured M5 compatibility
+# build, including filenames, so switching modes never reuses a stale file.
+NTSC_STANDARD_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_standard.json
+NTSC_STANDARD_PNR := $(BUILD_DIR)/$(NTSC_TOP)_standard_pnr.json
+NTSC_STANDARD_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_standard.fs
+.PHONY: ntsc-standard ntsc-standard-program
+ntsc-standard: $(NTSC_STANDARD_BITSTREAM)
+
+$(NTSC_STANDARD_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 0 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+
+$(NTSC_STANDARD_PNR): $(NTSC_STANDARD_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
+	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
+		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
+
+$(NTSC_STANDARD_BITSTREAM): $(NTSC_STANDARD_PNR)
+	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+
+ntsc-standard-program: $(NTSC_STANDARD_BITSTREAM)
+	$(TOOL) openFPGALoader -b $(BOARD) $<
+
 check-tools:
 	@$(TOOL) yosys -V >/dev/null
 	@$(TOOL) nextpnr-himbaechel --version >/dev/null
@@ -355,8 +377,16 @@ check-tools:
 	@$(TOOL) openFPGALoader --version >/dev/null
 	@echo "All required tools are available."
 
-.PHONY: test sim-reference sim-video sim-video-weak sim-video-mono sim-hdmi
-test: sim sim-badphase sim-cordic sim-burst sim-reference sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-hdmi
+.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
+
+test-quality:
+	python3 scripts/test_video_quality.py
+
+sim-tracking: | $(BUILD_STAMP)
+	$(TOOL) iverilog -g2012 -s burst_tracking_tb -o $(BUILD_DIR)/burst_tracking_tb \
+		src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/burst_tracking_tb.v
+	$(TOOL) vvp $(BUILD_DIR)/burst_tracking_tb
 
 sim-reference: | $(BUILD_STAMP)
 	@for args in "0 0" "0 -100" "1 100"; do \
@@ -381,6 +411,11 @@ sim-video-mono: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s ntsc_video_tb -Pntsc_video_tb.MONO=1 -Pntsc_video_tb.FIELDS=1 \
 		-o $(BUILD_DIR)/ntsc_video_mono_tb $(CAPTURE_SIM_RTL) sim/ntsc_video_tb.v
 	$(TOOL) vvp $(BUILD_DIR)/ntsc_video_mono_tb
+
+sim-video-late: | $(BUILD_STAMP)
+	$(TOOL) iverilog -g2012 -s ntsc_video_tb -Pntsc_video_tb.HSHIFT=24 -Pntsc_video_tb.FIELDS=1 \
+		-o $(BUILD_DIR)/ntsc_video_late_tb $(CAPTURE_SIM_RTL) sim/ntsc_video_tb.v
+	$(TOOL) vvp $(BUILD_DIR)/ntsc_video_late_tb
 
 sim-hdmi: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s tmds_encoder_tb -o $(BUILD_DIR)/tmds_encoder_tb src/tmds_encoder.v sim/tmds_encoder_tb.v

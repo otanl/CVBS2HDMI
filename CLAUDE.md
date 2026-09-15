@@ -843,6 +843,59 @@ that bench checks decoded RGB against published values and a quarter of the
 gain fails it by construction. `git diff` settled it in one command -- which is
 the first thing version control paid for here.
 
+### 2026-09-14 continuation: two reproducible holdover bugs
+
+The M5 defaults are retained: `LEGACY_TIMING=1`, `TRACK_P=2`, the 18-bit
+burst watchdog and `V_TARGET=488`. This continuation does not change chroma
+gain or the generator firmware.
+
+1. **Burst prediction must not bridge missing lines as one line.** The long
+   watchdog preserved colour lock through VBI, but `track_pred` still advanced
+   only one learned step when the next measurement arrived. A 24-line gap in
+   a rotating-burst test gave 38.22 degrees of error on return and four bad
+   lines. Invalidate only `have_prev/have_step` after 2403 sample strobes
+   (1.5 nominal lines); preserve the NCO frequency and colour lock. Two fresh
+   bursts re-seed the predictor. `sim-tracking` now checks the first returning
+   line as well as the settled lines: 84 checks, maximum 4.41 degrees, no errors
+   above the 12-degree limit. The old RTL fails this test.
+2. **Accept qualified sync just after a coasted start.** A delayed sync could
+   land a few samples after `force_line` reset `pcnt`, outside `in_window`.
+   All following syncs then landed just after subsequent forced starts, so
+   they were rejected until `FORCE_GIVEUP` dropped lock. A short late window
+   when `force_run != 0` allows the real sync to correct the early start.
+   `period_out` reports `rcnt` for real edges, not the short time since the
+   forced start. With the recorded full-sync stimulus, final lock confidence
+   improved from 38/255 (unlocked) to 255/255; accepted edges improved from
+   358/400 to 379/400. Weak sync accepts 400/400 and holds 255/255. The recording
+   seam is not an exact line period. `sim-video-late` adds an independent
+   24-sample phase step: old capture RTL loses lock, fixed RTL passes with
+   `bad_channels=0`, `bad_lines=0`, maximum RGB error 17.
+
+The burst correlator also registers ADC-minus-blank before multiplication.
+The original subtract/multiply path failed routed timing at 119.03 MHz;
+separating it preserves the sample/reference alignment (five clocks per
+sample) and the intermediate build reached 134.99 MHz against 125.94 required.
+Always inspect the **final routed** timing results for each final bitstream,
+not the pre-route estimate or that intermediate number.
+
+`make test` now asserts the recorded-waveform results instead of only printing
+them. The colour-video stimulus blanks for 24 lines, not just the nine-line
+equalising/broad-pulse sequence. Capture and weak-capture tests use separate
+executables, so `make -j4 test` cannot race on the same binary. `ntsc-standard`
+and `ntsc-standard-program` provide `LEGACY_TIMING=0` with separate output
+files; they do not change the M5 build or imply a standard-source bench test.
+
+`scripts/video_quality.py` makes the bar-row metric reproducible without the
+external scratchpad or Pillow. It reports all frames, including missing
+pictures, and separately reports colour-bearing frames, high-end RGB clipping
+and row-to-row RGB differences. Defaults are rows 20:350, first bar at x=24,
+80-pixel bar spacing; the grey ramp is outside this ROI. These definitions
+differ from the old scratchpad, so do not compare the percentages directly.
+The second unmodified-hardware baseline (`build/ntsc_resume_baseline2_*.png`)
+has 120/120 colour-bearing frames, 93.588% correct-order rows, 3.662% dropped,
+2.750% wrong-order and 27.617% saturated channel samples. Luminance order alone
+does not prove hue or gain accuracy.
+
 ## Captured reference data
 
 `make dumpbig-program` fills a 32768-sample buffer (about 19 consecutive lines) from a sync edge
@@ -1078,6 +1131,69 @@ does not survive.
 
 Colour bars are vertical, so **one line contains all eight colours** — there is no need for the
 long capture at all.
+
+## The hardware picture metric cannot currently resolve an RTL change
+
+This retires an entire line of investigation, including several conclusions
+recorded earlier in this file, and it is the most expensive thing learned so far.
+
+`scripts/video_quality.py` classifies rows of a 120-frame capture as correct,
+dropped or wrong-order.  It is a good metric -- it is stable to about one point
+across repeated captures of one bitstream.  What it is *not* stable to is
+rebuilding.  Measured in a single session, same board, same source, same
+`NTSC_SEED`:
+
+| build | correct | wrong-order |
+|-------|---------|-------------|
+| HEAD | 86.5%, 87.3% | 3.5%, 2.2% |
+| HEAD RTL, seed 11 | 55.4% | 16.3% |
+| HEAD RTL, seed 19 | 56.0% | 16.5% |
+| a build **logically identical to HEAD** on the M5 path | 68.9%, 71.1%, 74.2% | ~18% |
+
+The last row is the one that matters.  Every behavioural difference was gated
+off with `LEGACY_TIMING`, so that build decodes this source with exactly HEAD's
+logic -- and it measures thirteen points below HEAD.  **Build-to-build spread is
+about 30 points; a real RTL effect would have to be larger than that to be
+visible, and none of the ones under test are.**
+
+So the bisection that produced the table below was measuring placement, not
+logic, and its conclusion -- "HEAD's `burst_nco.v` beats every variant" -- is
+withdrawn:
+
+| configuration | correct | wrong-order |
+|---|---|---|
+| HEAD | 86.5% / 87.3% | 3.5% / 2.2% |
+| gap invalidation + product pipelining | 77.1% | 11.2% |
+| product pipelining only | 72.9% | 14.9% |
+| gap invalidation only | 69.4% | 18.5% |
+
+Each change alone appearing worse than both together should have been the tell:
+that pattern has no causal reading, and it is what placement noise looks like.
+
+**Until this is fixed, decide RTL questions in simulation.**  `make test` runs
+fifteen asserting testbenches and can tell these changes apart; the board cannot.
+
+### The suspect: an unconstrained clock crossing
+
+`constraints/tangnano20k_ntsc.sdc` constrains all three clocks and every build
+passes.  But nextpnr only *reports* cross-domain delay, it does not close it,
+and that number moves with placement while the picture moves with it:
+
+    Max delay posedge serial_clk -> posedge pixel_clk : 18.61 ns
+    Max delay posedge serial_clk -> posedge pixel_clk : 22.19 ns
+
+The pixel period is 39.68 ns, so 22 ns is over half of it on a path nothing
+checks.  `top_ntsc_hdmi.v` crosses 126 MHz to 25.2 MHz in two places --
+`video_line_store` (`wr_clk`/`rd_clk`, plus `rd_line_end`) and the scope dump
+buffer.  This project has already found two CDC bugs by hand, both of the same
+shape: a pulse generated in one domain and consumed in the other.  Look there
+first, and treat any multi-bit value crossing without a handshake as the bug
+until proved otherwise.
+
+Note also that `--freq`/`--sdc` does not stop a build being programmed: a seed
+that reports `FAIL at 125.94 MHz` still produces a `.fs`.  Check the reported
+frequency before believing a measurement.
+
 
 ## Hardware (Verified against `../tangADC.zip` → `tangADC.kicad_sch` + `production/netlist.ipc`)
 

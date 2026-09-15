@@ -40,7 +40,13 @@ module burst_nco #(
     parameter integer AVG_LOG2  = 2,
     parameter         SNAP_PER_LINE = 1'b0,
     parameter [31:0]  SNAP_PHASE    = 32'd0,
-    parameter [31:0]  HUE_OFFSET    = 32'd0
+    parameter [31:0]  HUE_OFFSET    = 32'd0,
+    // A burst gap longer than this invalidates the per-line step prediction.
+    // 8010 samples is five lines at 25.2 MHz: long enough to ride out an
+    // occasional line whose burst falls under MAG_MIN -- the M5 source runs
+    // about 19 codes against a spec 40 -- and short enough to fire inside the
+    // ~20-line vertical interval, which is the gap that actually matters.
+    parameter integer TRACK_GAP_SAMPLES = 8010
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -251,6 +257,20 @@ module burst_nco #(
                 err_sum <= 20'sd0;
                 avg_cnt <= 8'd0;
                 inc <= INC_NOM;
+            end
+            // Drop the step prediction across a gap, well before the watchdog.
+            //
+            // The tracker extrapolates burst_off by burst_step every line.  The
+            // watchdog above only intervenes after 164 lines, so across the
+            // ~20-line vertical interval -- which carries no burst at all --
+            // the predictor ran open loop and arrived at the first returning
+            // line up to 38 degrees out, taking four lines to pull back in.
+            // That is the coloured tearing at the top of the picture.  Holding
+            // a step measured 20 lines ago is worse than admitting the gap and
+            // re-measuring, so anything past a line and a half re-learns.
+            if (burst_age == TRACK_GAP_SAMPLES[17:0]) begin
+                have_step <= 1'b0;
+                have_prev <= 1'b0;
             end
 
             if (gate_fall) begin

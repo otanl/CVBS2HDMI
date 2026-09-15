@@ -8,6 +8,8 @@ module ntsc_video_tb;
     parameter integer SYNC_DEPTH = 36;
     parameter integer MONO = 0;
     parameter integer FIELDS = 3;
+    parameter integer VBI_LINES = 24;
+    parameter integer HSHIFT = 0;
     reg clk = 0;
     always #4 clk = ~clk;
     reg rst_n = 0;
@@ -23,7 +25,7 @@ module ntsc_video_tb;
         .line_done(line_done), .vsync_pulse(vsync_pulse), .sync_locked(locked),
         .black_out(black), .dmp_ack(1'b0)
     );
-    integer n = 0, pos, fsamp, half_no, half_pos, bar, r, g, b;
+    integer n = 0, stim_n, pos, fsamp, half_no, half_pos, bar, r, g, b;
     integer lines = 0, pixels = 0, fields = 0, checks = 0, bad_lines = 0;
     integer bad_colours = 0, er, eg, eb, err, max_error = 0;
     real phase, value, yy, uu, vv;
@@ -37,7 +39,11 @@ module ntsc_video_tb;
     endtask
     // Set ADC data at its rising clock edge. Phase 2 samples settled data.
     always @(posedge adc_clk) if (rst_n) begin
-        fsamp = n % 420420;
+        // Shift one line late and retain that phase, as at a recording seam
+        // or source timing jump. Subsequent lines must not be rejected just
+        // because the decoder coasted before the delayed sync arrived.
+        stim_n = n - ((n >= 1602*110) ? HSHIFT : 0);
+        fsamp = stim_n % 420420;
         pos = ((fsamp * 5) % 8008) / 5;
         half_no = (fsamp * 5) / 4004;
         half_pos = ((fsamp * 5) % 4004) / 5;
@@ -47,6 +53,9 @@ module ntsc_video_tb;
             if (half_pos < ((half_no >= 6 && half_no < 12) ? 683 : 59))
                 value = 100-SYNC_DEPTH;
         end else if (pos < 118) value = 100-SYNC_DEPTH;
+        // Continue blanking beyond the equalising/broad-pulse sequence.
+        // A nine-line-only VBI cannot catch a 20.5-line burst watchdog bug.
+        else if (fsamp < VBI_LINES*8008/5) value = 100;
         else if (pos >= 134 && pos < 197 && !MONO)
             value = 100 - 18*$sin(phase);
         else if (pos >= 237 && pos < 1557) begin
@@ -63,6 +72,10 @@ module ntsc_video_tb;
     end
     always @(negedge clk) if (rst_n) begin
         if (vsync_pulse) fields = fields + 1;
+        if (HSHIFT && n > 1602*111 && n < 1602*125 && !locked)
+            $fatal(1, "late sync caused repeated coasting and lost line lock");
+        if (!MONO && n > 420420 && fsamp < VBI_LINES*8008/5 && !dut.burst_locked)
+            $fatal(1, "vertical blanking dropped colour lock");
         if (wr_en) begin
             if (wr_addr[9:0] == 0) pixels = 0; // a partial line may be discarded
             pixels = pixels + 1;

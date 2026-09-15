@@ -28,6 +28,7 @@ module ntsc_capture_tb;
     parameter         WEAK  = 1'b0;    // 1 = use the flattened-sync stimulus
     parameter integer LINES = 400;     // how many lines to replay
     parameter [2:0]   PHASE = 3'd2;
+    parameter TRACE = 0;
     // Forwarded to the DUT so a sweep is a shell loop over -P.
     parameter integer Q_QUALIFY   = 88;
     parameter integer Q_THR_SHIFT = 5;
@@ -89,6 +90,11 @@ module ntsc_capture_tb;
     reg [31:0] settle_real, settle_force, settle_qual;
 
     always @(posedge clk) if (vsync_pulse) vs_count <= vs_count + 1;
+    always @(posedge clk) if (TRACE && dut.sample_stb && dut.line_edge &&
+        ((!dut.line_real && dut.force_run >= 4) ||
+         (dut.line_real && (dut.pcnt < 1442 || dut.pcnt > 1762))))
+        $display("sync trace idx=%0d real=%0d pcnt=%0d rcnt=%0d avg=%0d run=%0d lock=%0d",
+                 idx, dut.line_real, dut.pcnt, dut.rcnt, dut.period_avg, dut.force_run, lock_level);
 
     integer i;
     initial begin
@@ -120,13 +126,19 @@ module ntsc_capture_tb;
         $display("found         : %0d", real_count  - settle_real[15:0]);
         $display("forced        : %0d", force_count - settle_force[15:0]);
         $display("qualified     : %0d", qual_count  - settle_qual[15:0]);
-        $display("fields        : %0d  (expect %0d for %0d lines)",
-                 vs_count - vs_settle, LINES/262, LINES);
+        // This recording loops picture lines only; it contains no VBI.
+        $display("fields        : %0d  (expect 0: picture-only recording)",
+                 vs_count - vs_settle);
         $display("run_min/max   : %0d / %0d", run_min, run_max);
-        $display("RESULT found=%0d%% of %0d lines",
-                 (100 * (real_count - settle_real[15:0])) /
-                 ((real_count - settle_real[15:0]) +
-                  (force_count - settle_force[15:0]) + 1), LINES);
+        // A coasted start can be corrected by a late real edge. Those two
+        // events represent one line, so real/(real+forced) is not a yield.
+        $display("RESULT accepted=%0d%% of %0d expected lines",
+                 (100 * (real_count - settle_real[15:0])) / LINES, LINES);
+        if (!sync_locked || period_out < 1442 || period_out > 1762 ||
+            real_count - settle_real[15:0] < LINES*90/100 ||
+            real_count - settle_real[15:0] > LINES*110/100 || vs_count != vs_settle)
+            $fatal(1, "recorded NTSC sync acquisition failed");
+        $display("RESULT PASS");
         $finish;
     end
 endmodule

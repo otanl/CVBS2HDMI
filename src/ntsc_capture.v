@@ -12,6 +12,13 @@ module ntsc_capture #(
     // Compatibility with the old, measured blanking-relative M5 windows.
     // Normal operation counts from the sync leading edge at 25.2 MSPS.
     parameter         LEGACY_TIMING = 1'b0,
+    // Forwarded to burst_nco.  On: it takes the first line back from vertical
+    // blanking from 38 degrees of phase error to 4, which sim-tracking asserts.
+    // It measured worse on the board -- and so did a build made logically
+    // identical to the one it was compared against, by 13 points.  The hardware
+    // metric cannot resolve an RTL change at all right now; see the
+    // build-variance note in CLAUDE.md.  Simulation can, so simulation decides.
+    parameter integer BURST_GAP_SAMPLES = 8010,
     parameter         CLAMP_ENABLE  = 1'b0,
     parameter integer BP_START      = LEGACY_TIMING ? 305 : 200,
     parameter integer BP_END        = BP_START + 32,
@@ -188,6 +195,7 @@ module ntsc_capture #(
     reg [23:0] period_next;
     reg [15:0] window_start;
     reg in_window, force_line, period_plausible;
+    reg in_late_window;
     // These counters change only once per five clocks. Precompute the
     // window comparisons and the fractional IIR in the intervening clocks,
     // keeping carry chains out of the line-start/write-enable path.
@@ -197,6 +205,7 @@ module ntsc_capture #(
             free_period <= P_NOM + FMARGIN;
             window_start <= P_NOM - ACC_WIN;
             in_window <= 0; force_line <= 0; period_plausible <= 0;
+            in_late_window <= 0;
         end else begin
             period_error <= $signed({1'b0, rcnt, 8'd0}) -
                             $signed({1'b0, period_avg, pfrac});
@@ -205,6 +214,9 @@ module ntsc_capture #(
                            ((lag == 0) ? FMARGIN[15:0] : 16'd0);
             window_start <= period_avg - win_w;
             in_window <= pcnt >= window_start;
+            // Gated on the standard-timing path so the M5 build synthesises
+            // to exactly what it did before this existed.
+            in_late_window <= !LEGACY_TIMING && (pcnt < P_WIN_NAR[15:0]);
             force_line <= pcnt >= free_period;
             period_plausible <= (period_error >= -(P_BAND * 256)) &&
                                 (period_error <= P_BAND * 256);
@@ -214,7 +226,12 @@ module ntsc_capture #(
     reg        vertical_reacquire;
     wire       acquiring   = !locked_st;
 
-    wire       line_real   = sync_qual && (in_window || acquiring || vertical_reacquire);
+    // A real edge arriving just after the flywheel already coasted a line is
+    // still that line's edge -- the flywheel was early, not the source late.
+    // Rejecting it left the standard-timing path coasting indefinitely: sync
+    // never locked and only 89% of lines were accepted.  Accepting it resyncs.
+    wire       late_real   = !LEGACY_TIMING && (force_run != 8'd0) && in_late_window;
+    wire       line_real   = sync_qual && (in_window || acquiring || vertical_reacquire || late_real);
     wire       line_edge   = line_real || (force_line && !acquiring);
 
     wire [7:0] span      = f_max - f_min;
@@ -524,7 +541,10 @@ module ntsc_capture #(
 
                 if (line_edge) begin
                     pcnt       <= 16'd1;   // may be overridden just below
-                    period_out <= pcnt;
+                    // pcnt is reset by a forced start too, so on a late
+                    // correction it holds a fragment of a line.  rcnt counts
+                    // real edge to real edge and is the period that matters.
+                    period_out <= line_real ? rcnt : pcnt;
                     {extra, facc} <= {1'b0, facc} + {1'b0, pfrac};
                     if (line_real) begin
                         vertical_reacquire <= 1'b0;
@@ -635,7 +655,7 @@ module ntsc_capture #(
             end
         end
     end
-    burst_nco u_nco (
+    burst_nco #(.TRACK_GAP_SAMPLES(BURST_GAP_SAMPLES)) u_nco (
         .clk(clk_cap), .rst_n(rst_n), .sample_en(sample_stb),
         .sample(adc_r), .blank_ref(black), .burst_gate(in_burst),
         .phase(nco_phase), .inc(),
