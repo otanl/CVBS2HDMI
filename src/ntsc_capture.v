@@ -109,6 +109,7 @@ module ntsc_capture #(
 );
     reg [2:0] phase, phase_r;
     reg [7:0] adc_r;
+    reg       otr_r;
     reg       adc_clk_r;
 
     wire [2:0] cap_index = (phase_sel == 3'd0) ? 3'd4 : (phase_sel - 3'd1);
@@ -116,10 +117,12 @@ module ntsc_capture #(
     always @(posedge clk_cap or negedge rst_n) begin
         if (!rst_n) begin
             phase <= 3'd0; phase_r <= 3'd0; adc_r <= 8'd0; adc_clk_r <= 1'b0;
+            otr_r <= 1'b0;
         end else begin
             phase     <= (phase == 3'd4) ? 3'd0 : phase + 3'd1;
             phase_r   <= phase;
             adc_r     <= adc_d;
+            otr_r     <= adc_otr;
             // Do not put a mux here.  A parameterised 60%-duty option was
             // tried, folded away at its default, and still cost the picture
             // half its rows -- the ADC clock leaves the die through this
@@ -573,8 +576,16 @@ module ntsc_capture #(
                 // Mode 5 is the positive control mode 4 needs: bit 5 is set in
                 // about two thirds of the dumped samples, so if its bar is also
                 // empty the counter is broken and mode 4 proves nothing.
+                // Mode 7 counts the AD9280's own out-of-range flag, which this
+                // design otherwise declares and ignores.  The top three bars sit
+                // at exactly 179 -- 0xB3, the largest value expressible with
+                // bits 2, 3 and 6 stuck at zero -- and three different bars
+                // reading the same maximum is what saturation looks like.  OTR
+                // says whether that saturation is the analog input leaving the
+                // converter's range, or something after it.
                 if ((SCOPE_TEST_RAMP == 4) ? adc_r[6] :
-                    (SCOPE_TEST_RAMP == 5) ? adc_r[5] : (adc_r <= 8'd2))
+                    (SCOPE_TEST_RAMP == 5) ? adc_r[5] :
+                    (SCOPE_TEST_RAMP == 7) ? otr_r : (adc_r <= 8'd2))
                     clip_count <= clip_count + 16'd1;
 
                 if (in_burst && line_in_field > 9'd40 && line_in_field < 9'd230)

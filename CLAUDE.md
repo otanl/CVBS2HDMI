@@ -910,6 +910,34 @@ What follows from it, and it is not optional:
   unedited version at the same seed and measuring it back to back.**  Every
   wrong conclusion in this file came from skipping that step.
 
+### The input over-drives the converter, and the row metric cannot see it
+
+The picture measures 99.97% correct rows and looks, by that number, finished.
+It is not.  Read the raw ADC trace and the top three bars -- white, yellow and
+cyan -- sit at **exactly 179 for 390 consecutive samples**, dead flat.  179 is
+`0xB3`, the largest value expressible with bits 2, 3 and 6 stuck at zero, and
+three different bars reading one maximum is saturation, not agreement.  On
+screen that is 225 pixels of featureless white where three bars should be, and
+the remaining bars come back washed out: green 152,217,76 where it should be
+saturated, blue 54,109,216.
+
+**The row metric accepts it because it tests for a non-increasing sequence, and
+equal bars are non-increasing.**  A picture can lose the whole bright half of
+its range and still score 99.97%.  Check the bar values, not just the order.
+
+The converter's own out-of-range flag settles where it happens.  `adc_otr` was
+declared in `ntsc_capture` and never used; wired to the diagnostic counter
+(`SCOPE_TEST_RAMP == 7`) it **saturates its bar**, against a bit-6 count of zero
+on the same counter, so the reading distinguishes often from never and this is
+often.  Blanking sits at code 2, so sync tips go below 0 V and under-range;
+the top is clipped before the converter, since a genuinely over-range sample
+would fold to a different code rather than resting on 179.
+
+So the signal is too large for the 0..2 V window at both ends.  The fix is
+analog -- `M5_OUTPUT_LEVEL` in the generator firmware, or attenuation at the
+input -- not a gain constant.  Digital gain cannot recover a level that was
+already flat when it reached the converter.
+
 ### The luma and chroma gains were constants, and the source's amplitude moved
 
 This is the largest single improvement measured in this project: **50.1% correct
