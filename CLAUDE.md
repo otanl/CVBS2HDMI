@@ -910,33 +910,46 @@ What follows from it, and it is not optional:
   unedited version at the same seed and measuring it back to back.**  Every
   wrong conclusion in this file came from skipping that step.
 
-### The input over-drives the converter, and the row metric cannot see it
+### The top bars merge because of the dead bits, not because of clipping
 
-The picture measures 99.97% correct rows and looks, by that number, finished.
-It is not.  Read the raw ADC trace and the top three bars -- white, yellow and
-cyan -- sit at **exactly 179 for 390 consecutive samples**, dead flat.  179 is
-`0xB3`, the largest value expressible with bits 2, 3 and 6 stuck at zero, and
-three different bars reading one maximum is saturation, not agreement.  On
-screen that is 225 pixels of featureless white where three bars should be, and
-the remaining bars come back washed out: green 152,217,76 where it should be
-saturated, blue 54,109,216.
+Worth following the whole chain, because the first two readings of it were
+wrong and the correction is the useful part.
 
-**The row metric accepts it because it tests for a non-increasing sequence, and
-equal bars are non-increasing.**  A picture can lose the whole bright half of
-its range and still score 99.97%.  Check the bar values, not just the order.
+The raw trace shows white, yellow and cyan resting at **exactly 179 for 390
+consecutive samples**.  179 is `0xB3`, and that reads as saturation.  It is not.
+With bits 2, 3 and 6 stuck at zero the converter maps every true value in
+179..191 -- and 243..255 -- onto 179, so three bars whose real levels differ by
+tens of codes come back identical.  **The merging is the dead bits.**
 
-The converter's own out-of-range flag settles where it happens.  `adc_otr` was
-declared in `ntsc_capture` and never used; wired to the diagnostic counter
-(`SCOPE_TEST_RAMP == 7`) it **saturates its bar**, against a bit-6 count of zero
-on the same counter, so the reading distinguishes often from never and this is
-often.  Blanking sits at code 2, so sync tips go below 0 V and under-range;
-the top is clipped before the converter, since a genuinely over-range sample
-would fold to a different code rather than resting on 179.
+Two measurements settle it, and both had to be made before the conclusion held:
 
-So the signal is too large for the 0..2 V window at both ends.  The fix is
-analog -- `M5_OUTPUT_LEVEL` in the generator firmware, or attenuation at the
-input -- not a gain constant.  Digital gain cannot recover a level that was
-already flat when it reached the converter.
+- **Source level does nothing.**  `M5_OUTPUT_LEVEL` swept 128, 96, 80, 64 leaves
+  the trace at `min=1 max=179 blanking=2` every time.  Of course it does: with
+  24 expressible codes clustered at the ends, the observed extremes are pinned
+  regardless of amplitude.  **Levels cannot be measured through this converter
+  at all**, which is why no analog tuning can be verified until the pins are
+  fixed.
+- **The picture agrees.**  Bars 0 and 1 read 246 at every level.  At 96 a third
+  bar separates (186 against 246) and at 64 the order breaks and colour is lost
+  entirely, so 128 remains the best setting -- 100.0% correct rows, colour on
+  every frame.
+
+`adc_otr` is now wired to the diagnostic counter (`SCOPE_TEST_RAMP == 7`) and
+saturates its bar against a bit-6 count of zero on the same counter, so sync
+tips are going under-range.  That is real and separate, and it cannot be
+corrected either: the analog clamp needs `lock_cnt >= 16`, sync cannot lock
+through a clipped signal, and forcing the clamp to pin AIN at CLAMPIN does not
+move the operating point back -- C2 at 1 uF is too much for the clamp amplifier,
+exactly as recorded above.
+
+**So the order of work is fixed, not a preference.**  Until `adc_d[2]`,
+`adc_d[3]` and `adc_d[6]` reach the FPGA, the converter has 24 of 256 codes, no
+level measurement means anything, and the top of the picture cannot separate.
+Three wires gate everything else.
+
+**And note what the row metric says while all of this is true: 100.00% correct,
+zero dropped, colour on 60 frames of 60.**  It tests for a non-increasing
+sequence and equal bars are non-increasing.  Read the bar values.
 
 ### The luma and chroma gains were constants, and the source's amplitude moved
 
