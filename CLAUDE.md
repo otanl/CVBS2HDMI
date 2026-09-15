@@ -910,6 +910,43 @@ What follows from it, and it is not optional:
   unedited version at the same seed and measuring it back to back.**  Every
   wrong conclusion in this file came from skipping that step.
 
+### The colour banding is the burst being quantised away, and no parameter fixes it
+
+The picture scores 100% correct rows and still looks wrong, in a specific way
+worth writing down: inside a bar that should be one flat colour, the colour
+alternates between two states in horizontal bands five to ten rows deep.
+
+Measured inside one green bar:
+
+| | standard deviation |
+|---|---|
+| blue | **40** (range 44..230) |
+| red | 19 |
+| green | 14 |
+
+Blue is `Y + 2.032 U`, the largest coefficient in the matrix, so the error is in
+**U** -- the chroma demodulation.  Row-to-row change is 8.7 against 4.5 between
+neighbouring pixels in a row, so it is **per-line phase**, not pixel noise.
+
+The cause is the dead bits again, and this is where they hurt most.  The burst
+is a small signal riding on blanking, and the expressible codes there run
+`0,1,2,3` then jump to `16,17,18,19` -- **a 13-code gap, and the same gap
+everywhere, because bits 2 and 3 leave only four steps inside each group of
+sixteen**.  A burst of +/-20 codes has almost no phase resolution left.
+
+Three parameter sweeps found nothing, and the reason they cannot is measurable:
+
+| | blue sd |
+|---|---|
+| `TRACK_P` 2 / 3 / 4 | 38.6 / 34.0 / 45.3 (and 3 drops colour lock to 18 frames of 40) |
+| `BURST_TRACK` on / off | 49.6 / 46.1 |
+| **one bitstream, measured three times** | **40.0 / 44.5 / 43.1** |
+
+The repeat spread is 4.5 and the sweep spread is 11, overlapping.  **No setting
+is resolvable above the measurement.**  Software tuning for this is finished;
+what is missing is resolution, and averaging cannot recover information that was
+never digitised.
+
 ### The top bars merge because of the dead bits, not because of clipping
 
 Worth following the whole chain, because the first two readings of it were
