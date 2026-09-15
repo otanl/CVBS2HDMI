@@ -155,9 +155,6 @@ module burst_nco #(
     localparam [31:0] INC_RANGE = INC_NOM / 1000; // +/-1000 ppm, no wind-up
     wire signed [32:0] inc_next = $signed({1'b0, inc}) +
                                   $signed({freq_adj[31], freq_adj});
-    wire [31:0] inc_mag = inc_next[31:0];
-    wire [31:0] inc_hi  = INC_NOM + INC_RANGE;
-    wire [31:0] inc_lo  = INC_NOM - INC_RANGE;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -315,15 +312,10 @@ module burst_nco #(
                         err_sum <= 20'sd0;
                         phase   <= SNAP_PER_LINE ? SNAP_PHASE
                                                  : (phase + inc + phase_adj);
-                        // Clamped with unsigned compares.  Apicula miscompiles
-                        // signed comparison on this part by placement seed
-                        // (YosysHQ/apicula#541), and the two bounds here are
-                        // positive constants, so the sign bit decides the
-                        // negative case and the rest is an unsigned magnitude.
-                        inc <= inc_next[32]        ? inc_lo
-                             : (inc_mag > inc_hi)  ? inc_hi
-                             : (inc_mag < inc_lo)  ? inc_lo
-                             : inc_mag;
+                        inc <= (inc_next > $signed({1'b0, INC_NOM + INC_RANGE}))
+                             ? INC_NOM + INC_RANGE
+                             : ((inc_next < $signed({1'b0, INC_NOM - INC_RANGE}))
+                                ? INC_NOM - INC_RANGE : inc_next[31:0]);
                     end else begin
                         avg_cnt <= avg_cnt + 8'd1;
                         err_sum <= sum_now;

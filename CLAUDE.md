@@ -822,43 +822,44 @@ correlation below any sensible magnitude floor. The window between the two is
 narrow. Median row-to-row colour difference has neither problem -- it is what
 the eye calls streaky, it survives clipping, and it assumes nothing about hue.
 
-### Bits 2, 3 and 6: what is ruled out, and what is not
+### Bits 2, 3 and 6 are the pin choice, not the converter
 
-Still unresolved, and worth stating precisely so the next attempt does not
-repeat the last one.
+**A second board with a second AD9280, read with the identical bitstream on the
+same source minutes apart, shows exactly the same three bits dead.**
 
-**Ruled out by measurement:** an open joint (pull attributes rewritten into an
-already-routed netlist, placement identical, no bit follows the pull); a short
-to ground (130 kOhm on D2, D3 and D6, and the same on the working D5); the
-read-back path (a known ramp returns 241 of 256 values, every column within one
-code); the source; the sampling phase; the ADC clock duty; and the IO standard.
+| | distinct codes | b2 | b3 | b6 | others |
+|---|---|---|---|---|---|
+| original board and part | 18 of 256 | 0.00 | 0.00 | 0.00 | 0.46..0.95 |
+| new board, new part | 29 of 256 | **0.00** | **0.00** | **0.00** | 0.45..0.67 |
 
-**Reproduces with new hardware.**  A freshly assembled board with a new AD9280,
-on the same Tang Nano module, shows the same three bits at zero.  That board's
-bus was weak overall, so it is suggestive rather than conclusive -- but it moves
-suspicion from the converter towards the pin choice.
+That retires the diagnosis recorded here earlier -- "U1's D2, D3 and D6 output
+stages are stuck low; the part needs replacing" -- which was wrong.  The
+evidence for it was a known DC input returning the wrong code, and that evidence
+was real; it simply does not distinguish a converter that cannot produce a bit
+from an FPGA pin that cannot receive one.  Replacing the part was the cost of
+finding that out, and it was worth paying: nothing else would have settled it.
 
-**The pins are `adc_d[2]` = 42, `adc_d[3]` = 41, `adc_d[6]` = 31.**  Pins 41 and
-42 are named as the analog audio outputs in Tang Nano 20K reference material,
-driven from an internal 1-bit DAC.  That reference describes a *dock* and says
-the conditioning components are added externally, so it does not by itself prove
-anything is attached on the bare module.  Pin 31 has not been identified.
+What is left is the carrier board's pin choice.  `adc_d[2]` is FPGA pin 42,
+`adc_d[3]` is 41, `adc_d[6]` is 31.  Also ruled out, each by measurement: an
+open joint, a short to ground (130 kOhm, same as a working bit), the read-back
+path, the source, the sampling phase, the ADC clock duty, and the IO standard
+(LVCMOS18/25/12 all read identically).  Pins 41 and 42 are named as the analog
+audio outputs in Tang Nano 20K reference material, but that reference describes
+a dock with external conditioning, so it does not settle what is attached on the
+bare module, and pin 31 is still unidentified.
 
-**That test was run, and it does not work.**  Built for the bare module with
-`PULL_MODE=UP` in the `.cst` and read through `SCOPE_FREERUN`, the answers
-contradict themselves: pull-up reads 0x80, pull-down reads 0x02.  A pull-down
-cannot leave a bit at 1.00.  So the scope path does not read pin state on a
-board with no signal, for a reason not yet found -- the identity header was
-suspected and cleared, since the extractor already starts below it at row 216.
+**The test to run next, and it is self-contained.**  Do not try to read pin
+state from outside again -- the scope path returns contradictory answers on a
+board with no signal, and three attempts went that way.  Instead drive those
+three pins as outputs from the FPGA with a known pattern and read them back
+through the same IO, which needs no external instrument and no interpretation.
+A pin that reads back what it was driven is usable and the fault is elsewhere; a
+pin that does not is unavailable on this module, and the three signals need
+moving to free pins -- three bodge wires, not a respin.
 
-Do not repeat it without first making the reading testable: drive a known
-pattern onto those pins from the FPGA and confirm the scope reports it back.
-Reading pins with an instrument that has never been checked against a known
-answer on *those* pins is how the last three attempts went wrong.
-
-Until then the cost is known and bounded: the converter delivers 24 of 256
-codes, and the picture still measures 100% correct rows, because the luma
-path's seven-sample boxcar averages the dither across the missing range.
+Until then the cost is bounded and small: 24 of 256 codes, and the picture still
+measures 100% correct rows, because the luma path's seven-sample boxcar averages
+the dither across the missing range.
 
 ### Apicula has an open placement-dependent miscompute bug on this exact chip
 

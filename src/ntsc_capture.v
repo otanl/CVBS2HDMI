@@ -239,7 +239,12 @@ module ntsc_capture #(
     // as one unsigned magnitude compare, which the bug does not touch.
     // period_error stays for the shift that trims period_next; the bug is in
     // comparison, not arithmetic.
-    reg [23:0] per_gap;
+    // Two unsigned compares against constants, the same shape as the two
+    // signed ones they replace, so the cost is the same.  Taking a magnitude
+    // first instead -- a negate and a mux ahead of the compare -- dropped the
+    // capture clock from 141 MHz to 100.  A negative period_error is simply a
+    // large unsigned one, so the sign bit picks which constant to test.
+    localparam [24:0] PE_NEG_LIMIT = 25'd0 - (P_BAND * 256);
     reg in_late_window;
     // These counters change only once per five clocks. Precompute the
     // window comparisons and the fractional IIR in the intervening clocks,
@@ -247,7 +252,6 @@ module ntsc_capture #(
     always @(posedge clk_cap or negedge rst_n) begin
         if (!rst_n) begin
             period_error <= 0; period_next <= P_NOM * 256;
-            per_gap <= 24'd0;
             free_period <= P_NOM + FMARGIN;
             window_start <= P_NOM - ACC_WIN;
             in_window <= 0; force_line <= 0; period_plausible <= 0;
@@ -255,9 +259,6 @@ module ntsc_capture #(
         end else begin
             period_error <= $signed({1'b0, rcnt, 8'd0}) -
                             $signed({1'b0, period_avg, pfrac});
-            per_gap <= (({rcnt, 8'd0}) >= ({period_avg, pfrac}))
-                     ? (({rcnt, 8'd0}) - ({period_avg, pfrac}))
-                     : (({period_avg, pfrac}) - ({rcnt, 8'd0}));
             period_next <= {period_avg, pfrac} + period_adjust[23:0];
             free_period <= period_avg + {15'd0, extra} +
                            ((lag == 0) ? FMARGIN[15:0] : 16'd0);
@@ -267,7 +268,9 @@ module ntsc_capture #(
             // to exactly what it did before this existed.
             in_late_window <= !LEGACY_TIMING && (pcnt < P_WIN_NAR[15:0]);
             force_line <= pcnt >= free_period;
-            period_plausible <= per_gap <= (P_BAND * 256);
+            period_plausible <= period_error[24]
+                             ? (period_error >= PE_NEG_LIMIT)
+                             : (period_error <= (P_BAND * 256));
         end
     end
     reg        locked_st;
