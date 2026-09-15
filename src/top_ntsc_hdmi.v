@@ -12,6 +12,7 @@ module top_ntsc_hdmi #(
     parameter       SCOPE_ONLY    = 1'b0,
     parameter       FRAME_ALIGN   = 1'b1,
     parameter       LEGACY_TIMING = 1'b1,
+    parameter       SCOPE_FULL_RANGE = 1'b0,
     parameter integer SCOPE_DIV   = 3
 ) (
     input  wire       clk27,
@@ -255,9 +256,12 @@ module top_ntsc_hdmi #(
     );
 
     wire [11:0] trace_mul = ({4'd0, dmp_rdata} << 4) - {4'd0, dmp_rdata}; // x15
-    wire [10:0] trace_y   = 11'd479 - trace_mul[11:3];
+    // Full range keeps all 256 ADC codes below the diagnostic bars.
+    wire [10:0] trace_y   = SCOPE_FULL_RANGE ? (11'd479 - {3'd0, dmp_rdata})
+                                           : (11'd479 - trace_mul[11:3]);
     wire [10:0] thr_mul   = ({3'd0, s_thr} << 4) - {3'd0, s_thr};
-    wire [10:0] thr_y     = 11'd479 - thr_mul[10:3];
+    wire [10:0] thr_y     = SCOPE_FULL_RANGE ? (11'd479 - {3'd0, s_thr})
+                                           : (11'd479 - thr_mul[10:3]);
 
     reg [10:0] y_d;
     reg        scope_sync;

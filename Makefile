@@ -1,5 +1,9 @@
 SHELL := /bin/bash
 
+# nextpnr can write its JSON before failing the final timing check. Without
+# this, a second make can pack that failed result as if routing had succeeded.
+.DELETE_ON_ERROR:
+
 # Tang Nano 20K: GW2AR-18C core, 27 MHz onboard oscillator.
 DEVICE    := GW2AR-LV18QN88C8/I7
 FAMILY    := GW2A-18C
@@ -369,6 +373,28 @@ $(NTSC_STANDARD_BITSTREAM): $(NTSC_STANDARD_PNR)
 ntsc-standard-program: $(NTSC_STANDARD_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
 
+# Start in the existing HDMI oscilloscope view, without relying on UART.
+NTSC_SCOPE_PHASE ?= 2
+NTSC_SCOPE_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE).json
+NTSC_SCOPE_PNR := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)_pnr.json
+NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE).fs
+.PHONY: ntsc-scope ntsc-scope-program
+ntsc-scope: $(NTSC_SCOPE_BITSTREAM)
+
+$(NTSC_SCOPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+
+$(NTSC_SCOPE_PNR): $(NTSC_SCOPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
+	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
+		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
+
+$(NTSC_SCOPE_BITSTREAM): $(NTSC_SCOPE_PNR)
+	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+
+ntsc-scope-program: $(NTSC_SCOPE_BITSTREAM)
+	$(TOOL) openFPGALoader -b $(BOARD) $<
+
 check-tools:
 	@$(TOOL) yosys -V >/dev/null
 	@$(TOOL) nextpnr-himbaechel --version >/dev/null
@@ -382,6 +408,8 @@ test: sim sim-badphase sim-cordic sim-burst sim-reference sim-tracking sim-captu
 
 test-quality:
 	python3 scripts/test_video_quality.py
+	python3 scripts/test_scope_trace.py
+	python3 scripts/test_build_safety.py
 
 sim-tracking: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s burst_tracking_tb -o $(BUILD_DIR)/burst_tracking_tb \

@@ -896,6 +896,79 @@ has 120/120 colour-bearing frames, 93.588% correct-order rows, 3.662% dropped,
 2.750% wrong-order and 27.617% saturated channel samples. Luminance order alone
 does not prove hue or gain accuracy.
 
+### Reading the ADC back off the HDMI scope: geometry yes, amplitude no
+
+`make ntsc-scope-program` starts in the oscilloscope view with the full 256-code
+vertical scale (`SCOPE_FULL_RANGE`), and `scripts/scope_trace.py` recovers the
+plotted samples from a captured frame by their *position*, not their colour --
+the trace is white above the slicing threshold and red below it, so red alone
+finds both, and the threshold line is green and excludes itself.  No UART is
+involved, which is the point: the serial link on this board has never been
+dependable and the HDMI output always has been.
+
+**Detect the mark at r > 120, not r > 180.** A mark is one column wide, and
+where neighbouring columns sit at very different heights -- exactly the
+modulated regions worth measuring -- the capture card's horizontal filtering
+dims it below 180 and the column vanishes.  Lowering the threshold takes
+recovery from 551 to 639 of 640 columns, and where both settings read a column
+they differ by at most 2 codes, so it adds coverage without adding error.
+
+**Locate the burst by shape, not by offset.** About half the lines start from
+the flywheel rather than from a detected sync, so the dump can begin anywhere in
+the line and every fixed offset slides with it.  `locate_burst` looks for an
+oscillating stretch of 18..30 columns between two flat ones at the blanking
+level, and finds it in 19 frames out of 19.  Judging flatness needs a
+neighbourhood rather than a single column: a sinusoid sampled every third sample
+crosses its own mean, so individual columns inside the burst sit exactly at
+blanking and split the run into unrecognisable pieces.
+
+Measured this way the line comes back correctly, and this is what the tool is
+for:
+
+| | samples | time | NTSC |
+|---|---|---|---|
+| front porch + sync + breezeway | 190 | 7.5 us | 6.8 |
+| colour burst | 72 | 2.9 us | 2.5 |
+| back porch | 48 | 1.9 us | 1.6 |
+
+and the next line's burst lands 1593 samples after this one's, against a
+1597-sample line.  The first bar after blanking is flat at 161..163 -- white,
+no chroma -- and the strongly coloured bars swing by up to 145 codes.  So the
+source does emit a burst; the earlier "this source appears to emit no usable
+colour burst" is wrong, and so is a later attempt of mine to confirm it by
+measuring 103..40 samples before the first bright bar, which lands on the
+*previous* line's back porch and duly reports a flat 0.1 codes.
+
+**Do not read an amplitude out of it.**  Across nineteen frames the recovered
+samples take **27 distinct values out of 256**: bit 6 is never set at all, and
+bits 2 and 3 appear in under 0.2% of samples.  Equivalently every recovered
+trace position satisfies `y mod 16 in {12,13,14,15}`.  That is why the burst
+comes back as three discrete levels -- 18, 34 and 130 -- where a sinusoid
+sampled at 153 degrees a column has to spread around the circle, and why this
+path puts the burst at 95 codes peak-to-peak where the hardware's own min/max
+detector reads 19 across the same window.
+
+Three things are already established about it, so nobody need repeat them:
+
+- **It is not the capture card.**  The diagnostic bars in the same frames land
+  on rows 112, 120, 128 and so on -- exactly where the design draws them, with
+  no preference for any grid.  Only the one-pixel-wide trace marks are banded.
+- **It is not the sampling phase**, or not only.  `ntsc-scope` hard-codes
+  `DEFAULT_PHASE 2` while the normal build searches and settles on 4.  Phase 4
+  does help -- 38 distinct values instead of 27, bits 2/3/6 at 2.4/1.5/0.5%
+  instead of 0.2/0.1/0.0 -- but low bits should sit near 50%, not 2%.
+- **It is not the ADC bus.**  With bits 2, 3 and 6 cleared, 75% bars stop being
+  monotonic in luma: magenta lands on 80 while cyan lands on 34.  The picture
+  measures 86% of rows in correct luminance order, which that mapping cannot
+  produce.  The video path sees a healthy bus.
+
+So the corruption is specific to the scope *dump* path -- `dmp_data <= adc_r`
+into the 8-bit `line_buffer` at `serial_clk`, read back at `pixel_clk` -- and a
+dual-clock BSRAM read concurrent with a write is the obvious suspect, this
+project having already found two clock-crossing bugs of its own. Until that is
+settled, take geometry from this tool and levels from flat regions of the
+picture.
+
 ## Captured reference data
 
 `make dumpbig-program` fills a 32768-sample buffer (about 19 consecutive lines) from a sync edge
