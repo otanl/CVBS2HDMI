@@ -39,6 +39,15 @@ module ntsc_capture #(
     parameter integer THR_SHIFT_LO  = 5,
     parameter integer ACC_WIN       = LEGACY_TIMING ? 800 : 128,
     parameter         SCOPE_LIVE    = 1'b1,
+    // Fill the scope dump with a known constant instead of the ADC, so the
+    // whole read-back path -- BSRAM, trace drawing, HDMI, capture card and
+    // scripts/scope_trace.py -- can be checked against an answer known in
+    // advance.  0xAA exercises alternating bits, including the ones the ADC
+    // samples never show.  Measured: 3840 of 3840 recovered samples read 170.
+    // Modes 4/5 count ADC bit 6/5; mode 6 selects the M5's bottom grey ramp.
+    parameter integer SCOPE_TEST_RAMP = 0,   // 0 decoder tap, 1 const, 2 ramp, 3 raw adc_r
+    parameter integer ADC_CLK_WIDE = 0,      // 1 = 60% duty adc_clk instead of 40%
+    parameter integer CLAMP_FORCE = 0,       // 1 = hold the clamp on, AIN -> ~code 80
     parameter integer CHROMA_SHIFT = 0,
     parameter         COLOUR       = 1'b1
 ) (
@@ -101,7 +110,16 @@ module ntsc_capture #(
             phase     <= (phase == 3'd4) ? 3'd0 : phase + 3'd1;
             phase_r   <= phase;
             adc_r     <= adc_d;
-            adc_clk_r <= (phase == 3'd4) || (phase == 3'd0);
+            // The AD9280 is specified from a 50% duty clock.  A mod-5 divider
+            // can only make 40% or 60%, and 40% is what this has always used.
+            // The ADC produces just 24 distinct codes out of 256 -- nothing in
+            // 64..127 at all -- which is not explained by the board (the pull
+            // test shows every data pin driven), the display path (a known ramp
+            // reads back exactly) or the source (a stabiliser changed the signal
+            // and not the banding).  Clock duty is the one physical variable
+            // left untried.
+            adc_clk_r <= (ADC_CLK_WIDE != 0) ? ((phase == 3'd3) || (phase == 3'd4) || (phase == 3'd0))
+                                             : ((phase == 3'd4) || (phase == 3'd0));
         end
     end
 
@@ -114,7 +132,13 @@ module ntsc_capture #(
     reg clamp_win;
 
     reg  [7:0]  lock_cnt;
-    assign adc_clamp = CLAMP_ENABLE && clamp_win && (lock_cnt >= 8'd16);
+    // CLAMP_FORCE holds the analog clamp on continuously, which pins AIN to
+    // CLAMPIN = VREF * 10/32 = 0.625 V, about code 80.  That is 0x50 -- bit 6
+    // set -- so it is a known DC input whose correct answer requires the bit
+    // this board never reports.  No video source is involved, and there is no
+    // room to interpret the result.
+    assign adc_clamp = (CLAMP_FORCE != 0) ? 1'b1
+                     : (CLAMP_ENABLE && clamp_win && (lock_cnt >= 8'd16));
 
     localparam integer P_NOM     = 1602;
     localparam integer P_WIN_NAR = 128;
@@ -443,14 +467,22 @@ module ntsc_capture #(
                 if (dmp_cap) begin
                     dmp_we   <= 1'b1;
                     dmp_addr <= dmp_addr + 11'd1;
-                    dmp_data <= adc_r;
+                    // dl[0] is the decoder's previous ADC sample. The raw tap
+                    // in mode 3 is one sample newer. An earlier apparent bit
+                    // difference between these taps was a stale capture-card
+                    // frame, not proof of an input timing fault (CLAUDE.md).
+                    dmp_data <= (SCOPE_TEST_RAMP == 1) ? 8'hAA
+                              : (SCOPE_TEST_RAMP == 2) ? dmp_addr[10:3]
+                              : (SCOPE_TEST_RAMP == 3) ? adc_r
+                              : dl[0];
                     if (dmp_addr == 11'd2047) begin
                         dmp_cap <= 1'b0;
                         dmp_rdy <= 1'b1;
                     end
                 end else if ((SCOPE_LIVE || !dmp_rdy) &&
                              dmp_arm == 23'h7FFFFF && line_edge &&
-                             line_in_field > 9'd40 && line_in_field < 9'd230) begin
+                             line_in_field > ((SCOPE_TEST_RAMP == 6) ? 9'd200 : 9'd40) &&
+                             line_in_field < 9'd230) begin
                     dmp_cap  <= 1'b1;
                     dmp_addr <= 11'd0;
                     dmp_arm  <= 23'd0;
@@ -493,7 +525,19 @@ module ntsc_capture #(
                     lo_fall_seen <= 1'b1;
                 end
 
-                if (adc_r <= 8'd2) clip_count <= clip_count + 16'd1;
+                // Mode 4 repurposes this counter, and its existing on-screen
+                // bar, to answer one question without touching the dump path:
+                // does adc_r ever have bit 6 set?  The dump says never, which
+                // would mean no sample lands between 64 and 127 -- while the
+                // picture plainly shows bars there.  This counter is read by
+                // the hardware straight off adc_r, so it settles which of the
+                // two is lying, inside a single bitstream.
+                // Mode 5 is the positive control mode 4 needs: bit 5 is set in
+                // about two thirds of the dumped samples, so if its bar is also
+                // empty the counter is broken and mode 4 proves nothing.
+                if ((SCOPE_TEST_RAMP == 4) ? adc_r[6] :
+                    (SCOPE_TEST_RAMP == 5) ? adc_r[5] : (adc_r <= 8'd2))
+                    clip_count <= clip_count + 16'd1;
 
                 if (in_burst && line_in_field > 9'd40 && line_in_field < 9'd230)
                 begin

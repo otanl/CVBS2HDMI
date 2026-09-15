@@ -64,7 +64,9 @@ UARTが使えない場合は、既存のHDMI波形表示からADC値を測定で
 ```sh
 make ntsc-scope-program             # 位相2で起動時から全レンジ波形・診断を表示
 # 位相の比較: make ntsc-scope-program NTSC_SCOPE_PHASE=4
-python3 scripts/scope_trace.py build/scope060.png > build/scope060.json
+./scripts/live_capture.sh build/scope_new 120 8 --scope-mode 0 --phase 2
+python3 scripts/scope_trace.py build/scope_new_012.png --trace-only --require-mode 0
+# 既知ランプで表示経路を確認: make ntsc-scope-program NTSC_SCOPE_RAMP=2
 make ntsc-program                   # 通常の映像表示へ戻す
 ```
 
@@ -72,6 +74,14 @@ make ntsc-program                   # 通常の映像表示へ戻す
 診断用ビルドは全256コードが見える縦軸です。通常ビルドのS1表示を読む場合は
 `--legacy-scale`を指定します（こちらは約150以上が上部の診断表示に隠れます）。
 読み取りが曖昧な列は除外します。生サンプルの全点ダンプではなく、画面からの近似測定です。
+診断表示の200～207行にはモード・ADC位相・フレームカウンターを埋め込みます。
+`live_capture.sh`は必ず2回以上取得し、指定モード/位相とカウンター更新を確認します。
+毎回、先頭120フレームをウォームアップとして別扱いにし、その後の指定枚数を測定します。
+測定区間から異常フレームを選別して取り除くことはありません。
+各試行を別フォルダーに保持し、既存の出力画像は上書きしません（新しい接頭辞を使ってください）。
+通常映像では画素の変化だけを確認します。静止画と停止したキャプチャの区別や、
+書き込んだビットストリームの同一性は、診断用カウンターなしでは保証できません。
+振動部分の振幅測定は未検証です。`--trace-only`を使い、色のゲイン調整には流用しないでください。
 
 ## ADC単体プローブ（27 MSPS）
 

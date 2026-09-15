@@ -948,7 +948,7 @@ sampled at 153 degrees a column has to spread around the circle, and why this
 path puts the burst at 95 codes peak-to-peak where the hardware's own min/max
 detector reads 19 across the same window.
 
-Three things are already established about it, so nobody need repeat them:
+Four things are established about it, so nobody need repeat them:
 
 - **It is not the capture card.**  The diagnostic bars in the same frames land
   on rows 112, 120, 128 and so on -- exactly where the design draws them, with
@@ -962,12 +962,42 @@ Three things are already established about it, so nobody need repeat them:
   measures 86% of rows in correct luminance order, which that mapping cannot
   produce.  The video path sees a healthy bus.
 
-So the corruption is specific to the scope *dump* path -- `dmp_data <= adc_r`
-into the 8-bit `line_buffer` at `serial_clk`, read back at `pixel_clk` -- and a
-dual-clock BSRAM read concurrent with a write is the obvious suspect, this
-project having already found two clock-crossing bugs of its own. Until that is
-settled, take geometry from this tool and levels from flat regions of the
-picture.
+- **It is not the read-back path.**  `SCOPE_TEST_RAMP` writes a constant 0xAA
+  into the dump buffer instead of the ADC sample, and all 3840 recovered
+  samples across six frames read exactly 170 -- through BSRAM, trace drawing,
+  the HDMI link, the capture card and the recovery script, with no other value
+  appearing at all.  0xAA sets bit 3, which the ADC samples never show, so
+  nothing in that chain is dropping bits.
+
+- **It is not the detector in the script.**  The original strict settings
+  (r > 180, runs of 4 or more) give the same picture: 22 distinct values, bits
+  2, 3 and 6 at 0.02, 0.00 and 0.00.  Relaxing them changes coverage, not this.
+- **It is not the sampling phase.**  `HUNT_PHASE` defaults off, so the phase is
+  fixed at `DEFAULT_PHASE`, and all five values band the same way -- 27 to 38
+  distinct values, bits 2/3/6 at 0..3%.  A phase inside the AD9280's switching
+  window would be bad at one setting and good at another.
+
+So the dump buffer receives banded values while the read-back of a constant is
+exact.  And yet **the video path, which reads the same `adc_r` on the same
+strobe, is demonstrably fine**: the eight bars come off the capture card at
+253, 250, 237, 188, 162, 131, 94, 0, monotonic seven times out of seven.  With
+bits 2, 3 and 6 cleared those become 129, 51, 34, 32, 16, 2, 49, 32 -- red
+below blue -- and essentially every row would count as out of order, against a
+measured 2.8%.
+
+That contradiction is the open question, and it is worth stating plainly rather
+than resolving by assumption, which is how the burst was declared absent twice
+in this file already.  One lead worth checking first, because it would make the
+whole thing a non-problem: **the dump holds a single line**, and a colour-bar
+line legitimately contains only about ten luma levels.  Twenty-odd distinct
+values is what that should look like.  What that does not explain is why the
+missing ones are exactly those with bits 2, 3 or 6 set, when chroma modulation
+around each bar level ought to sweep through them.
+
+`SCOPE_TEST_RAMP` is left in place as the harness for settling it: it writes a
+known constant into the dump instead of the ADC sample, which is what proved
+the read-back path exact, and the same switch is where a ramp or a
+line-dependent pattern goes next.
 
 ## Captured reference data
 
@@ -1238,6 +1268,113 @@ protocol was not.**
 Do still check the reported frequency before believing a measurement:
 `--freq`/`--sdc` does not stop a build being programmed, and a seed that reports
 `FAIL at 125.94 MHz` still produces a `.fs`.
+
+### ADC bit 6 is stuck low, and a known DC input proves it
+
+The board reports only 24 of 256 codes -- 16..19, 32..35, 48..51, 128..131,
+144..147, 160..163 -- and nothing at all between 64 and 127.  Four independent
+measurements agree, so this is not an artefact of any one of them:
+
+- the dumped waveform read off the HDMI scope;
+- the hardware's own 16-bin histogram over the UART, `H 0000 0032 0115 0035
+  0000 0000 0000 0000 007B 0091 00F6 0000 ...`, with bins 4..7 empty;
+- a counter on `adc_r[6]` read straight off the register, against a positive
+  control on `adc_r[5]` that saturates its bar;
+- `CLAMP_FORCE`, which pins AIN to CLAMPIN = VREF x 10/32 = 0.625 V.  The right
+  answer is code 80, `0101_0000`.  The board returns 17..19 and 33..35, which
+  is 80 and 96 with bit 6 removed, and bit 7 goes to zero as well because
+  nothing exceeds 63 any more.  No video, no sync, no display path, no source.
+
+What it is not, each ruled out by measurement rather than argument:
+
+- **not an open joint.**  Rewriting only the pull attributes of an
+  already-routed netlist -- `scripts/scope_pull_variant.py`, so placement is
+  identical -- leaves every data bit unmoved by PULL_MODE UP or DOWN.  An
+  unsoldered pin follows the pull; all eight resist it.
+- **not the read-back path.**  A known ramp written into the dump buffer comes
+  back exactly: 241 distinct values, every column within one code.
+- **not the source.**  Inserting a stabiliser changed the signal and left the
+  banding untouched.
+- **not the sampling phase** (all five band identically) **nor the ADC clock
+  duty** (60% gives 21 distinct codes against 40%'s 27, and bit 6 stays dead).
+
+So the D6 net is held low by something low-impedance.  A bridge to ground, a
+failed AD9280 output, or a failed FPGA input, in that order of likelihood.  It
+is `adc_d[6]` -- FPGA pin 31, AD9280 pin 11, DIP pad 14 -- and an ohmmeter to
+ground with the power off separates the first from the other two.
+
+**It is the AD9280, and the chain that gets there is worth keeping.**  With the
+bus verified alive in all three configurations -- the five working bits sit at
+0.44..0.65 in each, which is what makes the reading trustworthy -- bits 2, 3 and
+6 stay at exactly 0.00 under PULL_MODE UP as well as DOWN and NONE.  A floating
+pin reads 1.00 with an internal pull-up, so something low-impedance holds them.
+
+An ohmmeter to ground, power off, then reads **130 kOhm on D2, D3 and D6 -- and
+the same 130 kOhm on D5, which works.**  So the nets are not shorted and the PCB
+is fine.
+
+And the high-Z accident above settles the last leg: while the AD9280's outputs
+were disabled, PULL_MODE=UP read those same three bits at 0.58, 0.37 and 0.57.
+**The FPGA inputs can read a one on pins 42, 41 and 31.**  They only ever read
+zero when the AD9280 is driving.
+
+Not shorted, not the FPGA, not floating, and a known 0.625 V input whose correct
+code is 80 comes back as 17..35.  **U1's D2, D3 and D6 output stages are stuck
+low; the part needs replacing.**  That is worth doing: the converter is
+delivering 24 of 256 codes, and several long-standing oddities recorded in this
+file -- a burst at half its specified amplitude, levels that never sat right,
+chroma that would not calibrate -- are consistent with five usable bits.
+
+**A reading taken while the outputs were high-Z is not a reading.**  Rework left
+the AD9280's THREE-STATE or STBY pin (16, 17) briefly off ground, which puts the
+whole data bus into high impedance -- it reads all zeros with no pull, and with
+PULL_MODE=UP it reads 72 "distinct codes" of pure noise, including apparent life
+on bits 2, 3 and 6.  That was reported here as the rework having worked.  It had
+not.  The tell was in the same line: bits 0 and 5, which are healthy, read 0.07
+and 0.14, and healthy bits do not do that.  **Check the known-good bits before
+believing anything about the suspect ones.**
+
+**Why the picture looked fine, and why that misled three attempts here.**  The
+luma path averages seven consecutive samples, and the samples dither across the
+missing range in proportion to the true level, so the boxcar output climbs
+smoothly through values the ADC itself never produces: 162, 148, 136, 132, 121,
+118, 98, 97, 87, 81, 62, 54, 33 measured off a real dump.  A monotonic
+eight-bar picture is therefore not evidence that the ADC is intact, and
+reasoning that it was cost several rounds.  Fixing this recovers the six bits
+of range now being thrown away, which is the largest single improvement
+available to this project.
+
+### The capture card freezes, and a frozen frame reads as a confident result
+
+Worse than the first-capture bias above, and it produced a wrong conclusion
+here before it was caught.  After programming, the card can return the *same
+frame* for minutes.  Three different bitstreams -- built, packed and loaded
+minutes apart -- produced byte-identical PNGs, and the analysis of them
+produced a clean, plausible, entirely fictional finding: that the decoder's own
+register held data the dump did not.  Measured live, the two agree exactly.
+
+The tell is an MD5 that does not change, so `scripts/live_capture.sh` checks
+for it and refuses to return a stale capture.  Use it instead of calling ffmpeg
+directly; it needed nine passes once.  Nothing downstream can detect this,
+because a frozen frame is a perfectly valid picture.
+
+### What the stabiliser did, measured
+
+An external video stabiliser was tried in the signal path, on the reasoning
+recorded above that regenerating sync would return information the M5 simply
+does not transmit.  It did not regenerate sync -- the waveform floor stayed at
+33..34 with no step below it -- and the picture got much worse:
+
+| | correct | dropped | wrong-order | colour |
+|---|---|---|---|---|
+| no stabiliser, M5 timing | **84.5%** | 12.7% | 2.8% | yes |
+| stabiliser, M5 timing | 22.5% | 66.4% | 11.1% | **0 of 120** |
+| stabiliser, standard timing | 32.2% | 49.0% | 18.8% | **0 of 120** |
+
+Levels essentially unchanged, yet neither sync nor burst locks.  That
+combination points at the vertical interval being rewritten, which is how this
+class of device works.  The unit has settings that were not swept, so this
+retires the specific attempt rather than the idea.
 
 ### Do not disturb the burst phase to fix the vertical interval
 

@@ -375,14 +375,15 @@ ntsc-standard-program: $(NTSC_STANDARD_BITSTREAM)
 
 # Start in the existing HDMI oscilloscope view, without relying on UART.
 NTSC_SCOPE_PHASE ?= 2
-NTSC_SCOPE_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE).json
-NTSC_SCOPE_PNR := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)_pnr.json
-NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE).fs
+NTSC_SCOPE_RAMP ?= 0
+NTSC_SCOPE_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP).json
+NTSC_SCOPE_PNR := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP)_pnr.json
+NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NTSC_SCOPE_RAMP).fs
 .PHONY: ntsc-scope ntsc-scope-program
 ntsc-scope: $(NTSC_SCOPE_BITSTREAM)
 
 $(NTSC_SCOPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
 
 $(NTSC_SCOPE_PNR): $(NTSC_SCOPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -404,12 +405,20 @@ check-tools:
 	@echo "All required tools are available."
 
 .PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header test-quality
+
+.PHONY: sim-scope-header
+sim-scope-header: | $(BUILD_STAMP)
+	$(TOOL) iverilog -g2012 -s scope_identity_tb -o $(BUILD_DIR)/scope_identity_tb \
+		$(NTSC_RTL) sim/gowin_prim_sim.v sim/scope_identity_tb.v
+	$(TOOL) vvp $(BUILD_DIR)/scope_identity_tb
 
 test-quality:
 	python3 scripts/test_video_quality.py
 	python3 scripts/test_scope_trace.py
 	python3 scripts/test_build_safety.py
+	python3 scripts/test_live_capture.py
+	python3 scripts/test_scope_pull_variant.py
 
 sim-tracking: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s burst_tracking_tb -o $(BUILD_DIR)/burst_tracking_tb \

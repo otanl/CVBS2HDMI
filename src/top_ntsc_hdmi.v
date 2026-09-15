@@ -13,6 +13,9 @@ module top_ntsc_hdmi #(
     parameter       FRAME_ALIGN   = 1'b1,
     parameter       LEGACY_TIMING = 1'b1,
     parameter       SCOPE_FULL_RANGE = 1'b0,
+    parameter integer SCOPE_TEST_RAMP = 0,
+    parameter integer ADC_CLK_WIDE   = 0,
+    parameter integer CLAMP_FORCE    = 0,
     parameter integer SCOPE_DIV   = 3
 ) (
     input  wire       clk27,
@@ -137,7 +140,10 @@ module top_ntsc_hdmi #(
         end
     end
 
-    ntsc_capture #(.LEGACY_TIMING(LEGACY_TIMING)) capture (
+    ntsc_capture #(.LEGACY_TIMING(LEGACY_TIMING),
+                   .SCOPE_TEST_RAMP(SCOPE_TEST_RAMP),
+                   .ADC_CLK_WIDE(ADC_CLK_WIDE),
+                   .CLAMP_FORCE(CLAMP_FORCE)) capture (
         .clk_cap(serial_clk), .rst_n(cap_rst_n),
         .adc_d(adc_d), .adc_otr(adc_otr),
         .adc_clk(adc_clk), .adc_clamp(adc_clamp),
@@ -388,7 +394,23 @@ module top_ntsc_hdmi #(
 
     wire on_grid = scope_sync && (y_d[5:0] == 6'd0);
 
-    wire [7:0] diagnostic_r = on_ci    ? 8'h00 :
+    // Machine-readable scope identity and liveness. A capture card may replay
+    // an older image after programming; changing PNG hashes alone cannot tell
+    // whether that image belongs to the requested diagnostic mode.
+    // 32 cells, 16 pixels each, MSB first: A5, mode/phase/reserved, frame, 01.
+    // Kept above the full-range trace (y >= 224), below the existing bars.
+    reg [7:0] scope_frame = 8'd0;
+    always @(posedge pixel_clk) begin
+        if (!vid_rst_n) scope_frame <= 8'd0;
+        else if (x == 0 && y == 0) scope_frame <= scope_frame + 8'd1;
+    end
+    wire [31:0] scope_identity = {8'hA5, SCOPE_TEST_RAMP[3:0], phase_sel,
+                                  1'b0, scope_frame, 8'h01};
+    wire on_scope_id = SCOPE_FULL_RANGE && y_d >= 11'd200 && y_d < 11'd208 && x < 11'd512;
+    wire scope_id_bit = scope_identity[31-x[8:4]];
+    wire [7:0] scope_id_rgb = scope_id_bit ? 8'hFF : 8'h00;
+
+    wire [7:0] diagnostic_r = on_scope_id ? scope_id_rgb : on_ci    ? 8'h00 :
                        on_cq    ? 8'hFF :
                        on_clk_  ? 8'h00 :
                        on_bmin  ? 8'h00 :
@@ -413,7 +435,7 @@ module top_ntsc_hdmi #(
                        on_trace ? 8'hFF :
                        on_thr   ? 8'h00 :
                        on_grid  ? 8'h20 : bg_r;
-    wire [7:0] diagnostic_g = on_ci    ? 8'hFF :
+    wire [7:0] diagnostic_g = on_scope_id ? scope_id_rgb : on_ci    ? 8'hFF :
                        on_cq    ? 8'h40 :
                        on_clk_  ? 8'hFF :
                        on_bmin  ? 8'hC0 :
@@ -438,7 +460,7 @@ module top_ntsc_hdmi #(
                        on_trace ? (below_thr ? 8'h00 : 8'hFF) :
                        on_thr   ? 8'hC0 :
                        on_grid  ? 8'h20 : bg_g;
-    wire [7:0] diagnostic_b = on_ci    ? 8'h40 :
+    wire [7:0] diagnostic_b = on_scope_id ? scope_id_rgb : on_ci    ? 8'h40 :
                        on_cq    ? 8'hFF :
                        on_clk_  ? 8'hFF :
                        on_bmin  ? 8'hFF :

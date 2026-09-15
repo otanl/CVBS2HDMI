@@ -27,6 +27,28 @@ import statistics
 import subprocess
 
 
+def scope_identity(data, width=640, height=480):
+    """Read the full-range scope's mode/phase/frame header, or None.
+
+    Version 1 occupies y=200..207, 32 monochrome cells of 16 pixels each.
+    Sample cell centres to tolerate HDMI 4:2:2 filtering and pixel latency.
+    """
+    if (width, height) != (640, 480) or len(data) != width*height*3:
+        raise ValueError("expected a 640x480 RGB24 scope image")
+    word = 0
+    for cell in range(32):
+        levels = [data[(y*width+x)*3] for y in range(202, 206)
+                  for x in range(cell*16+6, cell*16+10)]
+        level = statistics.median(levels)
+        if 70 < level < 180:
+            return None
+        word = (word << 1) | (level >= 180)
+    if word >> 24 != 0xA5 or word & 0xFF != 1 or word & (1 << 16):
+        return None
+    return dict(mode=(word >> 20) & 15, phase=(word >> 17) & 7,
+                frame=(word >> 8) & 255, version=1)
+
+
 def extract_trace(data, width=640, height=480, legacy_scale=False):
     if (width, height) != (640, 480) or len(data) != width*height*3:
         raise ValueError("expected a 640x480 RGB24 scope image")
@@ -35,7 +57,7 @@ def extract_trace(data, width=640, height=480, legacy_scale=False):
         runs, run = [], []
         # The coloured diagnostic bars occupy y < 192. Legacy scaling hides
         # high ADC codes there; full range places every code at y >= 224.
-        for y in range(196, height):
+        for y in range(196 if legacy_scale else 216, height):
             k = (y*width+x)*3
             r, g, b = data[k:k+3]
             # The trace is white above the slicing threshold and red below
@@ -160,6 +182,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image")
     parser.add_argument("--legacy-scale", action="store_true", help="old 15/8-pixels-per-code view")
+    parser.add_argument("--trace-only", action="store_true", help="report samples/identity without fitting colour")
+    parser.add_argument("--require-mode", type=int, choices=range(16), help="reject a stale/wrong-mode scope image")
     parser.add_argument("--burst", default="240:300", help="ADC sample interval")
     parser.add_argument("--porch", default="305:337", help="ADC sample interval")
     parser.add_argument("--bars", type=int, default=343, help="first bar, ADC sample index")
@@ -173,8 +197,16 @@ def main():
     data = subprocess.check_output(["ffmpeg", "-v", "error", "-i", args.image,
                                    "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
     values = extract_trace(data, probe["width"], probe["height"], args.legacy_scale)
+    identity = scope_identity(data, probe["width"], probe["height"])
+    if args.require_mode is not None and (identity is None or identity["mode"] != args.require_mode):
+        parser.error("missing identity or wrong scope mode")
     if sum(v is not None for v in values) < 500:
         parser.error("not a readable scope frame (or trace outside the unobscured range)")
+    if args.trace_only:
+        print(json.dumps(dict(image=args.image, identity=identity,
+                              valid_columns=sum(v is not None for v in values),
+                              adc_trace=values), indent=2))
+        return
     burst = fit_carrier(values, *map(int, args.burst.split(":")))
     porch = fit_carrier(values, *map(int, args.porch.split(":")))
     if burst["amplitude"] < 2:
@@ -189,7 +221,9 @@ def main():
         v = (fit["sine"]*bc-fit["cosine"]*bs)*args.chroma_gain
         bars.append(dict(index=i, **fit, y=y, u=u, v=v,
                          rgb=[y+1.140*v, y-0.395*u-0.581*v, y+2.032*u]))
-    print(json.dumps(dict(image=args.image, valid_columns=sum(v is not None for v in values),
+    print(json.dumps(dict(image=args.image, identity=identity,
+                         warning="Scope carrier amplitude is unvalidated; do not use this fit to calibrate gain.",
+                         valid_columns=sum(v is not None for v in values),
                          burst=burst, porch=porch, bars=bars, adc_trace=values), indent=2))
 
 
