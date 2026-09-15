@@ -822,6 +822,70 @@ correlation below any sensible magnitude floor. The window between the two is
 narrow. Median row-to-row colour difference has neither problem -- it is what
 the eye calls streaky, it survives clipping, and it assumes nothing about hue.
 
+### Bits 2, 3 and 6: what is ruled out, and what is not
+
+Still unresolved, and worth stating precisely so the next attempt does not
+repeat the last one.
+
+**Ruled out by measurement:** an open joint (pull attributes rewritten into an
+already-routed netlist, placement identical, no bit follows the pull); a short
+to ground (130 kOhm on D2, D3 and D6, and the same on the working D5); the
+read-back path (a known ramp returns 241 of 256 values, every column within one
+code); the source; the sampling phase; the ADC clock duty; and the IO standard.
+
+**Reproduces with new hardware.**  A freshly assembled board with a new AD9280,
+on the same Tang Nano module, shows the same three bits at zero.  That board's
+bus was weak overall, so it is suggestive rather than conclusive -- but it moves
+suspicion from the converter towards the pin choice.
+
+**The pins are `adc_d[2]` = 42, `adc_d[3]` = 41, `adc_d[6]` = 31.**  Pins 41 and
+42 are named as the analog audio outputs in Tang Nano 20K reference material,
+driven from an internal 1-bit DAC.  That reference describes a *dock* and says
+the conditioning components are added externally, so it does not by itself prove
+anything is attached on the bare module.  Pin 31 has not been identified.
+
+**The test that would settle it**, and it needs the carrier board off: build for
+the bare Tang with `PULL_MODE=UP` in the `.cst` -- not by patching a routed
+netlist, whose effect could not be confirmed -- and read the pins with
+`SCOPE_FREERUN`.  Free pins must read 0xFF.  Any bit that does not is held by
+something on the module, and the carrier board picked the wrong pins.
+
+Until then the cost is known and bounded: the converter delivers 24 of 256
+codes, and the picture still measures 100% correct rows, because the luma
+path's seven-sample boxcar averages the dither across the missing range.
+
+### Apicula has an open placement-dependent miscompute bug on this exact chip
+
+**The same RTL produces different functional results depending only on
+`nextpnr --seed`, on GW2A-18C.**  Not timing, not marginality: a comparator
+computes the wrong answer in one placement and the right answer in another, in
+the same bitstream.  It is reported as
+[YosysHQ/apicula#541](https://github.com/YosysHQ/apicula/issues/541), it is
+open, and there is no known workaround.  It does not affect the GW1N-9C used by
+the sibling 9K project, which is why nothing like it appears there.
+
+The affected construct is **signed comparison** -- `$signed(a) > $signed(b)`.
+This design is full of them: the flywheel's period window, the burst NCO's
+tracking error, the CORDIC's sign decisions.  The reporter ruled out BSRAM
+placement, memory contents and path delay, so there is nothing to tune around.
+
+This retires the last unexplained thing in this file.  Rebuilds of logically
+identical designs measured 98.4%, then 63.8%, 50%, and 1.1% correct rows within
+one session, and several hours went into hunting an RTL cause -- including
+removing a parameter from the ADC clock path and measuring *worse*.  There was
+no RTL cause.
+
+What follows from it, and it is not optional:
+
+- **Decide RTL questions in simulation.**  `make test` is deterministic; the
+  board is not.  This was already the conclusion for other reasons; now there
+  is a mechanism.
+- **Choose the shipping seed by measurement, and record which seed it was.**  A
+  seed is part of the build, not an implementation detail.
+- **Never attribute a picture change to an edit without rebuilding the
+  unedited version at the same seed and measuring it back to back.**  Every
+  wrong conclusion in this file came from skipping that step.
+
 ### The luma and chroma gains were constants, and the source's amplitude moved
 
 This is the largest single improvement measured in this project: **50.1% correct
