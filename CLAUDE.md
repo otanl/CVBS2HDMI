@@ -1173,6 +1173,25 @@ that pattern has no causal reading, and it is what placement noise looks like.
 **Until this is fixed, decide RTL questions in simulation.**  `make test` runs
 fifteen asserting testbenches and can tell these changes apart; the board cannot.
 
+### Discard the first capture after programming
+
+Programming drops the HDMI link, and the sink, the capture card and the
+vertical servo all have to re-acquire.  The first 120-frame capture taken
+afterwards is systematically low, and by enough to invent an effect:
+
+| | correct |
+|---|---|
+| first capture after programming | 56.7% |
+| second, third, fourth | 64.7%, 65.1%, 64.2% |
+
+Eight points, on one bitstream that did not change between them.  A seed sweep
+that programs and immediately measures compares four biased numbers -- which is
+exactly what was done here once.  Take two captures and keep the second.
+
+This is separate from the build-to-build spread above and does not explain it:
+the logically-identical build was measured three times, settled, and still read
+thirteen points below HEAD.
+
 ### The suspect: an unconstrained clock crossing
 
 `constraints/tangnano20k_ntsc.sdc` constrains all three clocks and every build
