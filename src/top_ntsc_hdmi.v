@@ -16,6 +16,9 @@ module top_ntsc_hdmi #(
     parameter integer SCOPE_TEST_RAMP = 0,
     parameter integer CLAMP_FORCE    = 0,
     parameter integer SCOPE_FREERUN  = 0,
+    parameter integer PIN_TEST       = 0,
+    parameter integer PROBE_ON       = 0,
+    parameter [0:0]   PROBE_EXPECT   = 1'b1,
     parameter integer SCOPE_DIV   = 3
 ) (
     input  wire       clk27,
@@ -25,6 +28,17 @@ module top_ntsc_hdmi #(
     output wire       adc_clk,
     output wire       adc_clamp,
 
+    // Candidate replacement pins for the three ADC bits that never arrive.
+    // Driven and read back through the same IO, so the test needs no external
+    // instrument and no interpretation: a pin that returns what it was given is
+    // usable, one that does not is not.  PIN_TEST = 0 leaves them tri-stated.
+    inout  wire [1:0] pin_test,
+    // Read-only probe for surveying candidate pins before committing them to a
+    // board.  Non-destructive: the pins are never driven, only pulled, so a pin
+    // that turns out to be connected to something on the module cannot be
+    // fought.  A free pin follows the pull; a loaded one does not, which is
+    // exactly how adc_d[2], adc_d[3] and adc_d[6] behave.
+    input  wire [7:0] pin_probe,
     input  wire [1:0] btn_n,
     output wire [5:0] led_n,
     output wire       uart_tx_pin,
@@ -486,9 +500,45 @@ module top_ntsc_hdmi #(
                        on_thr   ? 8'h00 :
                        on_grid  ? 8'h20 : bg_b;
 
-    wire [7:0] out_r = scope_sync ? diagnostic_r : bg_r;
-    wire [7:0] out_g = scope_sync ? diagnostic_g : bg_g;
-    wire [7:0] out_b = scope_sync ? diagnostic_b : bg_b;
+    // Walk a pattern over the candidates and count every readback mismatch.
+    reg  [1:0] pt_drive;
+    reg  [1:0] pt_phase;
+    reg [15:0] pt_bad;
+    always @(posedge pixel_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n) begin
+            pt_drive <= 2'b00; pt_phase <= 2'd0; pt_bad <= 16'd0;
+        end else if (x == 0 && y == 0) begin
+            pt_phase <= pt_phase + 2'd1;
+            pt_drive <= pt_phase[0] ? 2'b11 : 2'b00;
+        end else if (x == 11'd8) begin
+            // PIN_TEST == 2 compares against the inverse, which must mismatch
+            // every time.  Without it a dark bar proves nothing: a comparison
+            // that never runs is also dark.
+            if (pin_test != ((PIN_TEST == 2) ? ~pt_drive : pt_drive)
+                && pt_bad != 16'hFFFF)
+                pt_bad <= pt_bad + 16'd1;
+        end
+    end
+    assign pin_test = (PIN_TEST != 0) ? pt_drive : 2'bzz;
+    // Bar at rows 8..15, two pixels per mismatch, so a working pin stays dark.
+    wire on_pintest = (PIN_TEST != 0) && (y_d >= 11'd8) && (y_d < 11'd16) &&
+                      (x < {pt_bad[9:0], 1'b0});
+
+    // One 32-pixel cell per probed pin at rows 20..35: white if the pin read
+    // the level PROBE_EXPECT says the pull should give it, black if it did not.
+    reg [7:0] probe_ok;
+    always @(posedge pixel_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n) probe_ok <= 8'hFF;
+        else if (x == 11'd8)
+            probe_ok <= probe_ok & ~(pin_probe ^ {8{PROBE_EXPECT[0]}});
+    end
+    wire       on_probe   = (PROBE_ON != 0) && (y_d >= 11'd20) && (y_d < 11'd36)
+                            && (x < 11'd256);
+    wire       probe_cell = probe_ok[x[7:5]];
+
+    wire [7:0] out_r = on_probe ? (probe_cell ? 8'hFF : 8'h00) : on_pintest ? 8'hFF : scope_sync ? diagnostic_r : bg_r;
+    wire [7:0] out_g = on_probe ? (probe_cell ? 8'hFF : 8'h00) : on_pintest ? 8'h00 : scope_sync ? diagnostic_g : bg_g;
+    wire [7:0] out_b = on_probe ? (probe_cell ? 8'hFF : 8'h00) : on_pintest ? 8'h00 : scope_sync ? diagnostic_b : bg_b;
 
     hdmi_out out (
         .pixel_clk(pixel_clk), .serial_clk(serial_clk), .reset_n(vid_rst_n),
