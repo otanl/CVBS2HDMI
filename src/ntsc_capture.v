@@ -46,8 +46,8 @@ module ntsc_capture #(
     // samples never show.  Measured: 3840 of 3840 recovered samples read 170.
     // Modes 4/5 count ADC bit 6/5; mode 6 selects the M5's bottom grey ramp.
     parameter integer SCOPE_TEST_RAMP = 0,   // 0 decoder tap, 1 const, 2 ramp, 3 raw adc_r
-    parameter integer ADC_CLK_WIDE = 0,      // 1 = 60% duty adc_clk instead of 40%
     parameter integer CLAMP_FORCE = 0,       // 1 = hold the clamp on, AIN -> ~code 80
+    parameter integer SCOPE_FREERUN = 0,     // 1 = dump without needing a detected line
     parameter integer CHROMA_SHIFT = 0,
     parameter         COLOUR       = 1'b1
 ) (
@@ -110,16 +110,13 @@ module ntsc_capture #(
             phase     <= (phase == 3'd4) ? 3'd0 : phase + 3'd1;
             phase_r   <= phase;
             adc_r     <= adc_d;
-            // The AD9280 is specified from a 50% duty clock.  A mod-5 divider
-            // can only make 40% or 60%, and 40% is what this has always used.
-            // The ADC produces just 24 distinct codes out of 256 -- nothing in
-            // 64..127 at all -- which is not explained by the board (the pull
-            // test shows every data pin driven), the display path (a known ramp
-            // reads back exactly) or the source (a stabiliser changed the signal
-            // and not the banding).  Clock duty is the one physical variable
-            // left untried.
-            adc_clk_r <= (ADC_CLK_WIDE != 0) ? ((phase == 3'd3) || (phase == 3'd4) || (phase == 3'd0))
-                                             : ((phase == 3'd4) || (phase == 3'd0));
+            // Do not put a mux here.  A parameterised 60%-duty option was
+            // tried, folded away at its default, and still cost the picture
+            // half its rows -- the ADC clock leaves the die through this
+            // register, so anything added to the path moves the sampling
+            // instant relative to the converter's own output.  60% measured
+            // worse anyway: 21 distinct codes against 40%'s 27.
+            adc_clk_r <= (phase == 3'd4) || (phase == 3'd0);
         end
     end
 
@@ -479,10 +476,17 @@ module ntsc_capture #(
                         dmp_cap <= 1'b0;
                         dmp_rdy <= 1'b1;
                     end
+                // SCOPE_FREERUN arms on the timer alone.  Without it the dump
+                // waits for a detected line, so with no source connected the
+                // buffer is never written and the scope shows its power-up
+                // zeros -- which reads as "every ADC pin is low" and is not a
+                // measurement of the pins at all.  That wasted a test.
                 end else if ((SCOPE_LIVE || !dmp_rdy) &&
-                             dmp_arm == 23'h7FFFFF && line_edge &&
-                             line_in_field > ((SCOPE_TEST_RAMP == 6) ? 9'd200 : 9'd40) &&
-                             line_in_field < 9'd230) begin
+                             dmp_arm == 23'h7FFFFF &&
+                             (SCOPE_FREERUN != 0 ||
+                              (line_edge &&
+                               line_in_field > ((SCOPE_TEST_RAMP == 6) ? 9'd200 : 9'd40) &&
+                               line_in_field < 9'd230))) begin
                     dmp_cap  <= 1'b1;
                     dmp_addr <= 11'd0;
                     dmp_arm  <= 23'd0;

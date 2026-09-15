@@ -14,8 +14,8 @@ module top_ntsc_hdmi #(
     parameter       LEGACY_TIMING = 1'b1,
     parameter       SCOPE_FULL_RANGE = 1'b0,
     parameter integer SCOPE_TEST_RAMP = 0,
-    parameter integer ADC_CLK_WIDE   = 0,
     parameter integer CLAMP_FORCE    = 0,
+    parameter integer SCOPE_FREERUN  = 0,
     parameter integer SCOPE_DIV   = 3
 ) (
     input  wire       clk27,
@@ -142,8 +142,8 @@ module top_ntsc_hdmi #(
 
     ntsc_capture #(.LEGACY_TIMING(LEGACY_TIMING),
                    .SCOPE_TEST_RAMP(SCOPE_TEST_RAMP),
-                   .ADC_CLK_WIDE(ADC_CLK_WIDE),
-                   .CLAMP_FORCE(CLAMP_FORCE)) capture (
+                                      .CLAMP_FORCE(CLAMP_FORCE),
+                   .SCOPE_FREERUN(SCOPE_FREERUN)) capture (
         .clk_cap(serial_clk), .rst_n(cap_rst_n),
         .adc_d(adc_d), .adc_otr(adc_otr),
         .adc_clk(adc_clk), .adc_clamp(adc_clamp),

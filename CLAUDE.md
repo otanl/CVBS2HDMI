@@ -822,6 +822,36 @@ correlation below any sensible magnitude floor. The window between the two is
 narrow. Median row-to-row colour difference has neither problem -- it is what
 the eye calls streaky, it survives clipping, and it assumes nothing about hue.
 
+### With real sync present, the standard geometry gives the best picture yet
+
+Late in a session the source began emitting a sync step -- the waveform floor at
+33 with a run 30-odd codes below it, where every earlier measurement here found
+a flat floor and no step at all.  Nothing on this side changed to cause it; it
+appeared during repeated reseating.  With it present, `LEGACY_TIMING = 0`
+measures far better than anything recorded before:
+
+| | correct | dropped | wrong-order | colour |
+|---|---|---|---|---|
+| standard geometry, sync present | **98.4%**, 97.2..97.8% repeated | **0.00%** | 2.2..2.8% | **60 of 60** |
+| M5 geometry, same signal | 14.3% | 84.7% | -- | 0 of 60 |
+| best previously recorded here | 84.5% | 12.7% | 2.8% | yes |
+
+Zero dropped rows and colour on every frame.  So the decoder is right, and most
+of the difficulty recorded in this file came from a source that emitted no sync,
+not from the decode.  A source with sync wants the standard set, as the geometry
+note above says.
+
+**But the default was not flipped, because the result would not hold still.**
+Rebuilding the same logic gave 63.8%, then 50%, then 1.1%, and the capture card
+froze through twelve passes.  The likeliest reading is that the source's sync
+comes and goes -- it arrived on its own, so it can leave the same way -- which
+would explain swings that no RTL difference accounts for, including one chased
+as far as removing a parameter from the ADC clock path and measuring *worse*.
+
+Before touching this again, **read the waveform first and record whether a sync
+step is present**, then interpret the picture number in that light.  A build
+comparison across a source that changes state is not a comparison at all.
+
 ### `LEGACY_TIMING` is the right default for this source
 
 The window offsets come in two sets: standard NTSC geometry measured from the
