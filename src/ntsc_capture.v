@@ -228,6 +228,18 @@ module ntsc_capture #(
     reg [23:0] period_next;
     reg [15:0] window_start;
     reg in_window, force_line, period_plausible;
+    // Unsigned distance between the measured and estimated period.
+    //
+    // The plausibility test used to be a pair of signed comparisons against
+    // +/-P_BAND.  Apicula miscompiles signed comparison on this part depending
+    // only on the placement seed (YosysHQ/apicula#541, open, no workaround), and
+    // this particular comparison decides whether a sync edge is accepted -- a
+    // wrong answer here corrupts the line timing for the whole frame.  Both
+    // operands are counts and cannot be negative, so the same test is available
+    // as one unsigned magnitude compare, which the bug does not touch.
+    // period_error stays for the shift that trims period_next; the bug is in
+    // comparison, not arithmetic.
+    reg [23:0] per_gap;
     reg in_late_window;
     // These counters change only once per five clocks. Precompute the
     // window comparisons and the fractional IIR in the intervening clocks,
@@ -235,6 +247,7 @@ module ntsc_capture #(
     always @(posedge clk_cap or negedge rst_n) begin
         if (!rst_n) begin
             period_error <= 0; period_next <= P_NOM * 256;
+            per_gap <= 24'd0;
             free_period <= P_NOM + FMARGIN;
             window_start <= P_NOM - ACC_WIN;
             in_window <= 0; force_line <= 0; period_plausible <= 0;
@@ -242,6 +255,9 @@ module ntsc_capture #(
         end else begin
             period_error <= $signed({1'b0, rcnt, 8'd0}) -
                             $signed({1'b0, period_avg, pfrac});
+            per_gap <= (({rcnt, 8'd0}) >= ({period_avg, pfrac}))
+                     ? (({rcnt, 8'd0}) - ({period_avg, pfrac}))
+                     : (({period_avg, pfrac}) - ({rcnt, 8'd0}));
             period_next <= {period_avg, pfrac} + period_adjust[23:0];
             free_period <= period_avg + {15'd0, extra} +
                            ((lag == 0) ? FMARGIN[15:0] : 16'd0);
@@ -251,8 +267,7 @@ module ntsc_capture #(
             // to exactly what it did before this existed.
             in_late_window <= !LEGACY_TIMING && (pcnt < P_WIN_NAR[15:0]);
             force_line <= pcnt >= free_period;
-            period_plausible <= (period_error >= -(P_BAND * 256)) &&
-                                (period_error <= P_BAND * 256);
+            period_plausible <= per_gap <= (P_BAND * 256);
         end
     end
     reg        locked_st;

@@ -881,6 +881,23 @@ one session, and several hours went into hunting an RTL cause -- including
 removing a parameter from the ADC clock path and measuring *worse*.  There was
 no RTL cause.
 
+**The design no longer contains a signed comparison.**  There were two, and
+both are gone:
+
+- the flywheel's period plausibility test, `period_error` against `+/-P_BAND`,
+  which decides whether a sync edge is accepted -- a wrong answer there corrupts
+  the line timing for a whole frame.  Both operands are counts and cannot be
+  negative, so it is now one unsigned magnitude compare.  `period_error` itself
+  stays, because the bug is in comparison and not in arithmetic, and the shift
+  that trims `period_next` still needs it.
+- `burst_nco`'s clamp on the NCO increment.  The bounds are positive constants,
+  so the sign bit handles the negative case and the rest is unsigned.
+
+`grep -nE '\$signed[^;]*(>=|<=|>|<)'` over `src/` returns nothing, and every
+testbench figure is unchanged: reference worst 4.36/4.89/7.45 degrees, tracking
+worst 4.41, video `max_error=17`.  Keep it that way -- a signed comparison
+added back anywhere is a placement-dependent fault waiting for a rebuild.
+
 What follows from it, and it is not optional:
 
 - **Decide RTL questions in simulation.**  `make test` is deterministic; the
