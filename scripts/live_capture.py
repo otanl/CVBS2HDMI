@@ -7,6 +7,7 @@ validation requires the new scope header. Without it, changing pixels prove
 motion only, NOT which FPGA image is loaded.
 """
 import argparse
+import re
 import hashlib
 from pathlib import Path
 import shutil
@@ -14,6 +15,29 @@ import subprocess
 import tempfile
 
 from scope_trace import scope_identity
+
+
+
+def capture_device(name="UGREEN"):
+    """Resolve the capture card's avfoundation index by name.
+
+    It is not stable.  The card sat at index 0 for most of this project and
+    silently became 3 when other video devices appeared; every capture then
+    returned the built-in webcam, live_capture reported "capture failed", and
+    the obvious reading -- that the board had stopped outputting -- was wrong.
+    Look the name up rather than hard-coding a number.
+    """
+    listing = subprocess.run(
+        ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True).stderr
+    video = True
+    for line in listing.splitlines():
+        if "audio devices" in line:
+            video = False          # the same name appears in both lists
+        found = re.search(r"\[(\d+)\]\s+(.*)$", line)
+        if video and found and name.lower() in found.group(2).lower():
+            return found.group(1)
+    raise SystemExit("capture device %r not in the avfoundation device list" % name)
 
 
 def live_reason(hashes, identities, mode=None, phase=None):
@@ -83,7 +107,7 @@ def main():
         directory.mkdir()
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "avfoundation",
                    "-pixel_format", "uyvy422", "-video_size", "640x480", "-framerate", "60",
-                   "-i", "0:none", "-frames:v", str(args.frames+args.warmup), "-fps_mode", "passthrough",
+                   "-i", capture_device()+":none", "-frames:v", str(args.frames+args.warmup), "-fps_mode", "passthrough",
                    str(directory / "%03d.png")]
         result = subprocess.run(command)
         paths = sorted(directory.glob("*.png"))

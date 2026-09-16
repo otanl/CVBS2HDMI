@@ -20,11 +20,11 @@ IO_PORT "adc_clamp" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 // -------------------------------------------------------------- AD9280 in
 IO_LOC  "adc_d[0]" 27;
 IO_LOC  "adc_d[1]" 28;
-IO_LOC  "adc_d[2]" 42;
-IO_LOC  "adc_d[3]" 41;
+IO_LOC  "adc_d[2]" 72;
+IO_LOC  "adc_d[3]" 76;
 IO_LOC  "adc_d[4]" 29;
 IO_LOC  "adc_d[5]" 30;
-IO_LOC  "adc_d[6]" 31;
+IO_LOC  "adc_d[6]" 75;
 IO_LOC  "adc_d[7]" 77;
 IO_PORT "adc_d[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 IO_PORT "adc_d[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
