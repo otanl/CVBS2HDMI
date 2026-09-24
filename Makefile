@@ -351,26 +351,31 @@ ntsc-run: $(NTSC_BITSTREAM)
 ntsc-flash: $(NTSC_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) -f $<
 
-# Keep standard sync geometry separate from the measured M5 compatibility
-# build, including filenames, so switching modes never reuses a stale file.
-NTSC_STANDARD_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_standard.json
-NTSC_STANDARD_PNR := $(BUILD_DIR)/$(NTSC_TOP)_standard_pnr.json
-NTSC_STANDARD_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_standard.fs
-.PHONY: ntsc-standard ntsc-standard-program
-ntsc-standard: $(NTSC_STANDARD_BITSTREAM)
+# The M5 compatibility geometry, for a source with no sync step.  It was the
+# default until the respun board showed this source does emit sync; measured
+# back to back at seed 3 it drops 47.8% of rows and carries colour on 0 frames
+# of 120, against 0.43% and 120 of 120 for the standard set.  Keep it: it is
+# the only thing that works on a source whose sync tip and blanking are the
+# same level, and this project has seen one.
+# Separate filenames so switching modes never reuses a stale file.
+NTSC_LEGACY_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_legacy.json
+NTSC_LEGACY_PNR := $(BUILD_DIR)/$(NTSC_TOP)_legacy_pnr.json
+NTSC_LEGACY_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_legacy.fs
+.PHONY: ntsc-legacy ntsc-legacy-program
+ntsc-legacy: $(NTSC_LEGACY_BITSTREAM)
 
-$(NTSC_STANDARD_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 0 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+$(NTSC_LEGACY_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 1 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
 
-$(NTSC_STANDARD_PNR): $(NTSC_STANDARD_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
+$(NTSC_LEGACY_PNR): $(NTSC_LEGACY_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
 		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
 
-$(NTSC_STANDARD_BITSTREAM): $(NTSC_STANDARD_PNR)
+$(NTSC_LEGACY_BITSTREAM): $(NTSC_LEGACY_PNR)
 	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
 
-ntsc-standard-program: $(NTSC_STANDARD_BITSTREAM)
+ntsc-legacy-program: $(NTSC_LEGACY_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
 
 # Start in the existing HDMI oscilloscope view, without relying on UART.

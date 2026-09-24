@@ -861,6 +861,135 @@ Until then the cost is bounded and small: 24 of 256 codes, and the picture still
 measures 100% correct rows, because the luma path's seven-sample boxcar averages
 the dither across the missing range.
 
+### The respun board works: all eight bits, measured (2026-09-24)
+
+The corrected carrier arrived and was measured with a new Tang module, using the
+same scope bitstream recipe as the baseline (`SCOPE_ONLY=1 SCOPE_FULL_RANGE=1
+DEFAULT_PHASE=2`, seed 3) so the two numbers are directly comparable:
+
+| | distinct codes | min..max | b0 | b1 | b2 | b3 | b4 | b5 | b6 | b7 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| old pins (42/41/31) | 18 of 256 | 0..179 | .50 | .95 | **.00** | **.00** | .47 | .46 | **.00** | .48 |
+| respun (72/76/75) | **79 of 256** | 80..191 | .59 | .47 | **.64** | **.33** | .56 | .67 | **.48** | .52 |
+
+Every recovered sample used to satisfy `y mod 16 in {12,13,14,15}`; the residues
+are now spread across all sixteen. The diagnosis was right and the fix is real.
+
+Two variables changed at once -- the carrier *and* the module -- so if a later
+result ever disagrees, the R7-bodged old board is still the reference that
+separates them. Nothing so far needs it.
+
+### The source does emit sync, and three conclusions here were made through a broken converter
+
+With eight working bits the waveform reads cleanly, and it contradicts things
+recorded above that were measured through five bits. All eight scope frames
+agree, so these are not one-off readings:
+
+| | code | volts (7.81 mV/code) | NTSC |
+|---|---|---|---|
+| sync tip | 82..85 | — | — |
+| blanking (front porch) | **117**, on every frame | — | — |
+| **sync step** | **33 codes** | 258 mV | 286 mV |
+| peak white | 191 | — | — |
+| burst | 63 samples = **2.50 us** | — | 2.51 |
+
+So **retract "this source has no sync amplitude"** and the whole family of notes
+built on it. It has a sync step within 10% of the standard one. What it does
+have is a burst that swings 100..166 around a blanking of 117 -- positive-going
+by 49 codes and negative-going by only 17 -- which is the half-wave clipping the
+M5's DAC floor produces, and that part of the old reading stands.
+
+The line geometry, measured from the sync leading edge, and what the standard
+(`LEGACY_TIMING = 0`) window constants ask for:
+
+| | measured | constant |
+|---|---|---|
+| sync pulse | 0..135 | `QUALIFY` 80, accepted up to 150 |
+| colour burst | 135..198 | `BURST_START` 136, `BURST_END` 192 |
+| back porch | 198..261 | `BP_START` 200 |
+| active video | from ~261 | `ACTIVE_START` 252 |
+
+The standard set is right for this source to within a few samples. Measured back
+to back at seed 3, on the respun board, same capture protocol, second capture:
+
+| | correct | dropped | wrong-order | colour frames |
+|---|---|---|---|---|
+| `LEGACY_TIMING = 1` (M5 geometry) | 18.4% | **47.8%** | 33.8% | **0 of 120** |
+| `LEGACY_TIMING = 0` (standard) | 22.1% | **0.43%** | 77.5% | **120 of 120** |
+
+Sync and colour both go from broken to essentially perfect. `correct` barely
+moves because a different defect dominates it -- see the next section. The
+legacy set exists only for a source with no sync step, so with the converter
+fixed it is the wrong default for this one.
+
+**And retract the mirror.** `scripts/calib_uvfit.py` on the standard build now
+prefers a **pure rotation of 1.7 degrees** (rms residual 15.0) over a mirror fit
+(residual 20.5). The earlier "the decode carries a reflection as well as a
+rotation" was fitted to a picture produced by 24 expressible codes. There is no
+sign error to find; the demodulation axes are already right.
+
+The same fit reports a chroma gain of 0.152, and that number is *not* usable:
+per-bar coherence is 0.46..0.67, and a vector average over a wobbling phase
+shrinks without the signal shrinking. Gain is calibrated after phase, as recorded
+above, and phase is not settled yet.
+
+### The back porch is 16 codes low on some lines, and it is the dominant defect now
+
+This is what 77.5% wrong-order rows is, and it is worth following because the
+first two readings of it were wrong.
+
+Inside a bar, the decoded luma alternates between two values on consecutive
+*captured* lines -- each drawn twice by the bob, so the picture shows it as a
+four-row beat:
+
+| bar | bright line | dark line | difference |
+|---|---|---|---|
+| white 75% | 195 | 149 | -46 |
+| yellow | 167 | 124 | -43 |
+| cyan | 178 | 128 | -50 |
+| green | 134 | 96 | -38 |
+| magenta | 132 | 85 | -47 |
+
+It looks like chroma leaking into luma, and it is not: **the white bar
+alternates by as much as the coloured ones**, and white 75% carries no chroma.
+The shift is additive and the same size everywhere, which is the signature of
+the black reference moving, not of a gain or a phase error. The horizontal
+position is identical on bright and dark rows (left edge x=7, right edge x=561
+on both), so it is not a line that started in the wrong place either.
+
+The raw waveform says it outright. Across 40 scope frames, ten distinct line
+dumps:
+
+| | value |
+|---|---|
+| sync tip | 82, on all ten |
+| front porch | 117, on all ten |
+| **back porch** | **117 on five, 101 on five** |
+
+16 codes, bimodal, in the ADC samples themselves, with the front porch of the
+same lines rock steady. `black` is averaged over 32 samples of back porch at
+`BP_START` 200, so it faithfully follows a reference that is wrong, and
+`16 x 2.8125` -- the luma gain at `gain_sel` 0 -- is 45, which is the measured
+alternation.
+
+The likely mechanism, not yet proved: the burst is half-wave (above), so it
+carries about +16 codes of DC over its 2.5 us, and a 1 uF AC-coupled input
+answers that with an equal undershoot immediately after it. The front porch,
+60 us later, has recovered. That predicts the sign and the size, and it predicts
+that the dip decays along the line -- which is the measurement to make next,
+because it decides between the two fixes:
+
+- if it decays, take `black` from the **front porch** (dead flat at 117 on every
+  frame) instead of the back porch;
+- if it does not, the back-porch window has to move clear of the burst, and
+  32 samples is 4.5 subcarrier cycles, so it should become a whole number of
+  cycles as well.
+
+Do not tune chroma phase or gain until this is fixed. It moves the black
+reference by 16 codes on half the lines, and everything downstream of luma --
+the bar ordering, the UV fit's coherence, any hue measurement -- is measured
+against it.
+
 ### Apicula has an open placement-dependent miscompute bug on this exact chip
 
 **The same RTL produces different functional results depending only on
@@ -1053,17 +1182,26 @@ Before touching this again, **read the waveform first and record whether a sync
 step is present**, then interpret the picture number in that light.  A build
 comparison across a source that changes state is not a comparison at all.
 
-### `LEGACY_TIMING` is the right default for this source
+### `LEGACY_TIMING` -- superseded, and why it was ever 1
 
 The window offsets come in two sets: standard NTSC geometry measured from the
 sync leading edge (`QUALIFY` 80, burst 136..192, active from 252), and the ones
 measured on the M5 (`QUALIFY` 124, burst 240..300, active from 313).
 
-They differ because **this source has no sync step**, so the low run the
-detector qualifies on is the whole blanking interval rather than the sync pulse,
-and the trigger lands somewhere else entirely. With the standard set the picture
-rolls and tears; with `LEGACY_TIMING = 1` it sits still and every live frame
-carries colour. A source with real sync wants the standard set.
+They differ because the source appeared to have **no sync step**, so the low run
+the detector qualifies on was the whole blanking interval rather than the sync
+pulse, and the trigger landed somewhere else entirely. With the standard set the
+picture rolled and tore; with `LEGACY_TIMING = 1` it sat still and every live
+frame carried colour, so 1 was the default.
+
+**That reading was taken through a converter delivering 24 of 256 codes.** With
+the respun board it is measurably wrong -- the source emits a 33-code sync step,
+and the standard set wins by 47 points of dropped rows and 120 colour frames to
+zero. `top_ntsc_hdmi`'s default is now `LEGACY_TIMING = 1'b0`, and `make
+ntsc-legacy` builds the M5 set. See *The source does emit sync* above.
+
+Keep the legacy set. A source whose sync tip and blanking are the same level is
+a real case -- this project spent weeks on one -- and nothing else works on it.
 
 ### Measure against a clean tree, or diff first
 
@@ -1112,9 +1250,10 @@ not the pre-route estimate or that intermediate number.
 `make test` now asserts the recorded-waveform results instead of only printing
 them. The colour-video stimulus blanks for 24 lines, not just the nine-line
 equalising/broad-pulse sequence. Capture and weak-capture tests use separate
-executables, so `make -j4 test` cannot race on the same binary. `ntsc-standard`
-and `ntsc-standard-program` provide `LEGACY_TIMING=0` with separate output
-files; they do not change the M5 build or imply a standard-source bench test.
+executables, so `make -j4 test` cannot race on the same binary. `ntsc-legacy`
+and `ntsc-legacy-program` provide `LEGACY_TIMING=1` with separate output files;
+they do not change the default build or imply a bench test of either geometry.
+(These were `ntsc-standard*` while `LEGACY_TIMING=1` was the default.)
 
 `scripts/video_quality.py` makes the bar-row metric reproducible without the
 external scratchpad or Pillow. It reports all frames, including missing
@@ -1647,26 +1786,35 @@ FB1 → `+3V3A` and FB2 → `+3V3D`. The `+5V` pin (pad 40) is brought out but o
 
 The data bus is **not** in physical pin order. This mapping is authoritative:
 
-| Signal      | Dir        | FPGA pin | Gowin IO  | DIP pad | Series R |
-|-------------|------------|---------:|-----------|--------:|----------|
-| `adc_clk`   | FPGA → ADC |   **73** | IOT40A    |       1 | 33 Ω (R13) |
-| `adc_clamp` | FPGA → ADC |   **74** | IOT34B    |       2 | —        |
-| `adc_d[7]`  | ADC → FPGA |   **77** | IOT30A    |       5 | 20 Ω (R12) |
-| `adc_d[0]`  | ADC → FPGA |   **27** | IOB8A     |       8 | 20 Ω (R5) |
-| `adc_d[1]`  | ADC → FPGA |   **28** | IOB8B     |       9 | 20 Ω (R6) |
-| `adc_d[4]`  | ADC → FPGA |   **29** | IOB14A    |      12 | 20 Ω (R9) |
-| `adc_d[5]`  | ADC → FPGA |   **30** | IOB14A\*  |      13 | 20 Ω (R10) |
-| `adc_d[6]`  | ADC → FPGA |   **31** | IOB29A    |      14 | 20 Ω (R11) |
-| `adc_otr`   | ADC → FPGA |   **71** | IOT44A    |      23 | 20 Ω (R18) |
-| `adc_d[3]`  | ADC → FPGA |   **41** | IOB43A    |      35 | 20 Ω (R8) |
-| `adc_d[2]`  | ADC → FPGA |   **42** | IOB42B    |      36 | 20 Ω (R7) |
+This is the **corrected** assignment, on the respun board. `adc_d[2]`, `adc_d[3]`
+and `adc_d[6]` moved off FPGA 42/41/31, which the Tang module holds low — see
+*The respun board works* below for the measurement that confirmed it.
 
-\* The KiCad symbol labels both pad 12 and pad 13 `IOB14A`; pad 13 is almost certainly
-`IOB14B`. The IO *names* are informational — the **pin numbers** are what the `.cst` uses.
+| Signal      | Dir        | FPGA pin | Tang-side net | DIP pad | Series R |
+|-------------|------------|---------:|---------------|--------:|----------|
+| `adc_clk`   | FPGA → ADC |   **73** | HSPI_DIN2     |       1 | 33 Ω (R13) |
+| `adc_clamp` | FPGA → ADC |   **74** | HSPI_DIN3     |       2 | —        |
+| `adc_d[6]`  | ADC → FPGA |   **75** | HSPI_DIR      |   **3** | 20 Ω (R11) |
+| `adc_d[7]`  | ADC → FPGA |   **77** | GCLKT_1       |       5 | 20 Ω (R12) |
+| `adc_d[0]`  | ADC → FPGA |   **27** | LCD_B7        |       8 | 20 Ω (R5) |
+| `adc_d[1]`  | ADC → FPGA |   **28** | LCD_B6        |       9 | 20 Ω (R6) |
+| `adc_d[4]`  | ADC → FPGA |   **29** | LCD_B5        |      12 | 20 Ω (R9) |
+| `adc_d[5]`  | ADC → FPGA |   **30** | LCD_B4        |      13 | 20 Ω (R10) |
+| `adc_otr`   | ADC → FPGA |   **71** | HSPI_DIN0     |      23 | 20 Ω (R18) |
+| `adc_d[2]`  | ADC → FPGA |   **72** | HSPI_DIN1     |  **24** | 20 Ω (R7) |
+| `adc_d[3]`  | ADC → FPGA |   **76** | GCLKC_1       |  **38** | 20 Ω (R8) |
 
-Bit order, flattened: `D0=27  D1=28  D2=42  D3=41  D4=29  D5=30  D6=31  D7=77`.
+Bit order, flattened: `D0=27  D1=28  D2=72  D3=76  D4=29  D5=30  D6=75  D7=77`.
 `D2`/`D3` and `D4`..`D6` are the easy ones to transpose — a swapped pair shows up as a symmetric
 "folded" luma ramp, not as noise.
+
+The superseded assignment, for reading old logs: `D2=42  D3=41  D6=31`, DIP pads
+36, 35 and 14. Anything measured on those three bits before 2026-09-24 was
+measured through pins that read a constant zero.
+
+`adc_d[3]` is on 76, which is `GCLKC_1`. A global-clock pin used as an ordinary
+input is fine — it simply also has a clock-capable route — and it is measured
+alive. It is a *configuration* pin that must be avoided, not a clock one.
 
 Onboard (not on the carrier): 27 MHz oscillator on **pin 4**; HDMI TMDS on pins 33–40
 (clk 33/34, data0 35/36, data1 37/38, data2 39/40); LEDs on pins 15–20.

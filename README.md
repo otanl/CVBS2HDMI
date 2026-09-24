@@ -13,21 +13,22 @@ Apicula / openFPGALoader / Icarus Verilog)を使います。
 ./scripts/setup-macos.sh   # 初回のみ
 make check-tools
 make test                # 復号・同期・バッファ・TMDS・起動の回帰試験
-make ntsc                # 現在のM5信号向け互換設定をビルド
+make ntsc                # 標準NTSC同期波形向け(既定)をビルド
 make ntsc-program        # Tang Nano 20KのSRAMへ書き込み
 ```
 
-通常の同期波形を持つNTSC-J入力には、別のビルドを使います。
+同期段差を持たない入力（初期のM5など）には、別のビルドを使います。
 
 ```sh
-make ntsc-standard
-make ntsc-standard-program
+make ntsc-legacy
+make ntsc-legacy-program
 ```
 
-`ntsc`の既定値`LEGACY_TIMING=1`は、同期段差がほぼなくバーストが半波状になる
-現在のM5入力に合わせたものです。標準入力の窓位置とは異なるため、自動切替はしません。
-`ntsc-standard`は`LEGACY_TIMING=0`で生成し、ビットストリームも別名に保存します。
-標準モードは合成NTSC-J波形で検証しますが、M5での実機試験とは区別してください。
+既定値は`LEGACY_TIMING=0`です。同期段差がある入力では、こちらが行落ち0.43%・
+カラー120/120フレームに対し、`LEGACY_TIMING=1`は行落ち47.8%・カラー0/120でした
+（2026-09-24、改版基板・同一シードでの比較）。
+`ntsc-legacy`は`LEGACY_TIMING=1`で生成し、ビットストリームも別名に保存します。
+窓位置が大きく異なるため、自動切替はしません。
 7.5 IREセットアップを持つ入力の黒レベル補正、PAL、音声には未対応です。
 
 S1で波形・診断表示を切り替え、S2でADC取り込み位相を5段階に切り替えます。
