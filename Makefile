@@ -441,7 +441,7 @@ check-tools:
 	@echo "All required tools are available."
 
 .PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun sim-tape check-signed test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -463,6 +463,27 @@ sim-tape: | $(BUILD_STAMP)
 	$(TOOL) vvp $(BUILD_DIR)/tape_tb
 	python3 scripts/tape_decode.py $(BUILD_DIR)/tape_tb_decoded.hex $(BUILD_DIR)/tape_tb.ppm
 	cmp $(BUILD_DIR)/tape_tb_decoded.hex $(BUILD_DIR)/tape_tb_mem.hex
+
+.PHONY: sim-adc-front
+# Calibration across a whole conversion period of output delay, a switching
+# window a third of a period wide, drift in both directions (small enough to
+# ride out, and large enough to force a re-sweep), the production window
+# length, and the negative control: at 20 ns, rotation 4 puts the read inside
+# the switching window and must not come back clean.
+# Fields: TOD SWITCH AUTO rotation EXPECT_BAD DRIFT WIN_W
+sim-adc-front: | $(BUILD_STAMP)
+	@for cfg in "0 5000 1 0 0 0 12" "8000 5000 1 0 0 0 12" "16000 5000 1 0 0 0 12" \
+	            "24000 5000 1 0 0 0 12" "32000 5000 1 0 0 0 12" "38000 5000 1 0 0 0 12" \
+	            "20000 14000 1 0 0 0 12" "20000 5000 1 0 0 6000 12" "20000 5000 1 0 0 -14000 12" \
+	            "28000 5000 1 0 0 0 14" "20000 5000 0 4 1 0 12"; do \
+		set -- $$cfg; \
+		$(TOOL) iverilog -g2012 -s adc_front_tb -Padc_front_tb.TOD=$$1 -Padc_front_tb.SWITCH=$$2 \
+			-Padc_front_tb.AUTO=$$3 -Padc_front_tb.MANUAL=$$4 -Padc_front_tb.EXPECT_BAD=$$5 \
+			-Padc_front_tb.DRIFT=$$6 -Padc_front_tb.WIN_W=$$7 \
+			-o $(BUILD_DIR)/adc_front_tb src/adc_front.v sim/gowin_prim_sim.v sim/adc_front_tb.v || exit $$?; \
+		$(TOOL) vvp -n $(BUILD_DIR)/adc_front_tb > $(BUILD_DIR)/adc_front_tb.log; rc=$$?; \
+		grep -E '^adc_front|FATAL' $(BUILD_DIR)/adc_front_tb.log; test $$rc -eq 0 || exit 1; \
+	done
 
 .PHONY: sim-scope-freerun
 sim-scope-freerun: | $(BUILD_STAMP)
