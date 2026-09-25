@@ -34,7 +34,22 @@
 module adc_front #(
     parameter AUTO   = 1'b1,
     parameter SETTLE = 512,       // samples discarded after a rotation change
-    parameter WIN_W  = 14         // counting window, 2^WIN_W samples
+    parameter WIN_W  = 14,        // counting window, 2^WIN_W samples
+    // Which of the ODDR's two inputs leaves first.  Not documented; an odd
+    // rotation needs a transition inside a 126 MHz cycle, and the wrong order
+    // turns it into a 3.97 ns glitch -- two clock edges a conversion.
+    parameter CLK_D1_FIRST = 1'b0,
+    // Per-bit difference counts, for finding which bit reads when.
+    parameter DIAG = 1'b0,
+    // The bits the calibration looks at.  Measured per bit on the respun
+    // board (DIAG): bits 2, 3, 6 and 7 -- pins 72, 76, 75, 77, the top bank --
+    // read exactly alike on both edges at four rotations of ten, as a latched
+    // output should.  Bits 0, 1, 4 and 5 -- pins 27..30, the bottom bank beside
+    // the HDMI pins -- disagree between the two reads on 3 to 13 percent of
+    // conversions at every rotation, so counted in, no rotation is ever quiet
+    // and the calibration re-sweeps for ever (it saturated its sweep counter
+    // within seconds on the board).  The top bank alone locates the switching.
+    parameter [7:0] CAL_MASK = 8'b1100_1100
 ) (
     input  wire       pclk,           // 25.2 MHz, the pixel clock
     input  wire       fclk,           // 126 MHz, five times pclk, same source
@@ -44,7 +59,18 @@ module adc_front #(
     input  wire [3:0] manual_rot,     // with AUTO off
     output reg  [7:0] sample,         // one conversion per pclk
     output wire [3:0] rot_in_use,
-    output reg        cal_done
+    output reg        cal_done,
+    // Diagnostics: sweeps run so far (saturating), and the difference count
+    // of the last tracking window at the chosen rotation.
+    output reg  [5:0]     sweeps,
+    output wire           pair_x,     // the chosen rotation is quiet on pair x
+    output reg  [WIN_W:0] track_count,
+    input  wire [3:0]     dbg_rot,    // which rotation's sweep counts to show
+    output wire [WIN_W:0] dbg_cx,
+    output wire [WIN_W:0] dbg_cy,
+    input  wire [2:0]     dbg_bit,    // DIAG: which bit's counts to show
+    output wire [WIN_W:0] dbg_bx,     // DIAG: sample against the next fall
+    output wire [WIN_W:0] dbg_by      // DIAG: fall against the next rise
 );
     // ---- converter clock, 126 MHz domain ---------------------------------
     reg  [3:0] rot = 4'd0;            // pclk domain, below
@@ -68,8 +94,8 @@ module adc_front #(
             4'd8:    pat <= 10'b1110000011;
             default: pat <= 10'b1111000001;
         endcase
-        ck0 <= pat[{ph, 1'b0}];
-        ck1 <= pat[{ph, 1'b1}];
+        ck0 <= CLK_D1_FIRST ? pat[{ph, 1'b1}] : pat[{ph, 1'b0}];
+        ck1 <= CLK_D1_FIRST ? pat[{ph, 1'b0}] : pat[{ph, 1'b1}];
     end
 
     ODDR u_clk (
@@ -87,10 +113,38 @@ module adc_front #(
 
     always @(posedge pclk) sample <= rise;
 
+    // Per bit, the same two pairs as differ_x/differ_y, counted over
+    // 2^WIN_W samples and held.
+    generate
+        if (DIAG) begin : g_diag
+            reg [WIN_W:0] bx [0:7], by [0:7], bx_h [0:7], by_h [0:7];
+            reg [WIN_W:0] dn = 0;
+            integer j;
+            always @(posedge pclk) begin
+                dn <= dn + 1'b1;
+                for (j = 0; j < 8; j = j + 1) begin
+                    if (dn[WIN_W]) begin
+                        bx_h[j] <= bx[j]; by_h[j] <= by[j];
+                        bx[j] <= 0; by[j] <= 0;
+                    end else begin
+                        if (sample[j] != fall[j]) bx[j] <= bx[j] + 1'b1;
+                        if (rise[j]   != fall[j]) by[j] <= by[j] + 1'b1;
+                    end
+                end
+                if (dn[WIN_W]) dn <= 0;
+            end
+            assign dbg_bx = bx_h[dbg_bit];
+            assign dbg_by = by_h[dbg_bit];
+        end else begin : g_nodiag
+            assign dbg_bx = 0;
+            assign dbg_by = 0;
+        end
+    endgenerate
+
     reg differ_x, differ_y;
     always @(posedge pclk) begin
-        differ_x <= (sample != fall);     // a sample against the witness after it
-        differ_y <= (rise != fall);       // the witness against the sample after it
+        differ_x <= ((sample & CAL_MASK) != (fall & CAL_MASK));   // sample, next witness
+        differ_y <= ((rise & CAL_MASK)   != (fall & CAL_MASK));   // witness, next sample
     end
 
     // ---- calibration -------------------------------------------------------
@@ -114,6 +168,9 @@ module adc_front #(
     reg  [3:0]     keep;              // rotation to fall back on
 
     assign rot_in_use = rot;
+    assign dbg_cx     = cx[dbg_rot];
+    assign dbg_cy     = cy[dbg_rot];
+    assign pair_x     = use_x;
 
     wire [4:0] scan_m1  = scan - 5'd1;
     wire [4:0] scan_w   = (scan_m1 >= 5'd10) ? scan_m1 - 5'd10 : scan_m1;
@@ -143,8 +200,8 @@ module adc_front #(
             sweep <= 4'd0; scan <= 5'd0; low_x <= 10'd0; low_y <= 10'd0;
             run_x <= 4'd0; len_x <= 4'd0; end_x <= 4'd0;
             run_y <= 4'd0; len_y <= 4'd0; end_y <= 4'd0;
-            use_x <= 1'b0; keep <= 4'd0;
-            rot <= AUTO ? 4'd0 : manual_rot; cal_done <= 1'b0;
+            use_x <= 1'b0; keep <= 4'd0; sweeps <= 6'd0; track_count <= 0;
+            rot <= 4'd0; cal_done <= 1'b0;   // a constant: async reset
             for (i = 0; i < 10; i = i + 1) begin cx[i] <= 0; cy[i] <= 0; end
         end else if (!AUTO) begin
             rot <= manual_rot;
@@ -200,6 +257,7 @@ module adc_front #(
                 if (scan == 5'd20) st <= S_MOVE;
             end
             S_MOVE: begin
+                if (sweeps != 6'h3F) sweeps <= sweeps + 6'd1;
                 if (peak >= MIN_PEAK && (ok_x || ok_y)) begin
                     rot      <= pick_x ? centre(end_x, len_x) : centre(end_y, len_y);
                     keep     <= pick_x ? centre(end_x, len_x) : centre(end_y, len_y);
@@ -214,6 +272,7 @@ module adc_front #(
                 if (track_differ && !cnt_x[WIN_W]) cnt_x <= cnt_x + 1'b1;
                 if (n == WIN - 1) begin
                     n <= 0; cnt_x <= 0;
+                    track_count <= cnt_x;
                     // The switching has reached a read, or nothing was found:
                     // measure again from the start.
                     if (!cal_done || cnt_x >= quiet_max) begin

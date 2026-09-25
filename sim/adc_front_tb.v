@@ -17,6 +17,10 @@ module adc_front_tb;
     parameter         EXPECT_BAD = 1'b0;   // with AUTO off: MANUAL reads inside the window
     parameter integer DRIFT      = 0;      // ps added to TOD after the first check
     parameter integer WIN_W      = 12;
+    // Glitch bits 0, 1, 4 and 5 at random instants, as the board's bottom-bank
+    // pins read: the calibration must still settle on one sweep, and the
+    // check is then made on the other four bits.
+    parameter         NOISY      = 1'b0;
 
     reg fclk = 1'b0;
     always #3968 fclk = ~fclk;            // 126 MHz
@@ -51,7 +55,17 @@ module adc_front_tb;
             adc_d = code;
         end
     endtask
+    task automatic glitch(input integer at);
+        begin
+            #(at);
+            adc_d = adc_d ^ ({$random} & 8'b0011_0011);
+            #2000;
+            adc_d = adc_d & 8'b1100_1100 | hist[(conv - 1) % 4096] & 8'b0011_0011;
+        end
+    endtask
     always @(posedge adc_clk) begin
+        if (NOISY && ({$random} % 8 == 0))
+            fork glitch({$random} % 36000); join_none
         lfsr = {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]};
         hist[conv % 4096] = lfsr[7:0];
         conv = conv + 1;
@@ -64,6 +78,7 @@ module adc_front_tb;
     // random code is a 1-in-256 accident per candidate -- then every later
     // sample must match it.
     integer cand, best, lat, bad, checked;
+    wire [7:0] mask = NOISY ? 8'b1100_1100 : 8'hFF;
     integer hits [1:8];
     task measure;
         begin
@@ -71,7 +86,7 @@ module adc_front_tb;
             repeat (1000) begin
                 @(posedge pclk);
                 for (cand = 1; cand <= 8; cand = cand + 1)
-                    if (sample === hist[(conv - cand) % 4096]) hits[cand] = hits[cand] + 1;
+                    if ((sample & mask) === (hist[(conv - cand) % 4096] & mask)) hits[cand] = hits[cand] + 1;
             end
             best = 0; lat = -1;
             for (cand = 1; cand <= 8; cand = cand + 1)
@@ -81,7 +96,7 @@ module adc_front_tb;
             if (lat > 0)
                 repeat (20000) begin
                     @(posedge pclk);
-                    if (sample !== hist[(conv - lat) % 4096]) bad = bad + 1;
+                    if ((sample & mask) !== (hist[(conv - lat) % 4096] & mask)) bad = bad + 1;
                     checked = checked + 1;
                 end
         end
@@ -114,6 +129,7 @@ module adc_front_tb;
         $display("adc_front: TOD=%0d ps SWITCH=%0d AUTO=%0d rotation %0d pair %s latency %0d checked %0d mismatches %0d",
                  tod_now, SWITCH, AUTO, rot, dut.use_x ? "x" : "y", lat, checked, bad);
         if (AUTO && (lat < 0 || bad != 0)) $fatal(1, "calibrated read is not clean");
+        if (AUTO && dut.sweeps > 2) $fatal(1, "calibration keeps re-sweeping: %0d", dut.sweeps);
         if (!AUTO && EXPECT_BAD && lat > 0 && bad == 0)
             $fatal(1, "negative control: a read inside the switching window came back clean");
         if (DRIFT != 0) begin

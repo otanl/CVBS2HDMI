@@ -331,12 +331,15 @@ $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-# Seed 11, chosen by measurement on the board and re-measured after the ADC
-# moved into IO registers: hue within 12 deg of the replay and 5..6 deg of
-# line-to-line wobble, where seed 3 gave 50 deg and 24 -- Apicula's ALU bug
-# (CLAUDE.md), so a seed is part of the build.  151.7 MHz.  Re-measure after
-# any RTL change.
-NTSC_SEED ?= 11
+# A seed is still part of the build.  The pixel-clock decoder has no ALU cells
+# and its converter read is calibrated and measured clean at every seed tried,
+# but one placement in three still loses colour -- a miscompute in the colour
+# path that follows placement, not timing (CLAUDE.md).  Seed 3, measured on the
+# board 2026-09-25 against seeds 5 and 11 of the same netlist: 100% correct
+# rows, 0 dropped, colour on 120 of 120 frames, 1.9..3.6 deg line to line
+# (seed 5 the same; seed 11 colour on 60 of 120).  Re-measure after any RTL
+# change, and keep the ADC strip's sweeps at 1 and track at 0 while doing it.
+NTSC_SEED ?= 3
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
@@ -387,6 +390,30 @@ $(NTSC_LEGACY_BITSTREAM): $(NTSC_LEGACY_PNR)
 	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
 
 ntsc-legacy-program: $(NTSC_LEGACY_BITSTREAM)
+	$(TOOL) openFPGALoader -b $(BOARD) $<
+
+# The converter interface's per-bit diagnostic: calibration off, rotation
+# stepping 0..9 every 0.67 s, and each bit's rising/falling-read disagreement
+# in the strip.  Read with scripts/adc_diag.py, which records a few seconds of
+# the strip as video.  This is how the bottom-bank bits were found.
+NTSC_ADCDIAG_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_adcdiag.json
+NTSC_ADCDIAG_PNR := $(BUILD_DIR)/$(NTSC_TOP)_adcdiag_pnr.json
+NTSC_ADCDIAG_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_adcdiag.fs
+.PHONY: ntsc-adcdiag ntsc-adcdiag-program
+ntsc-adcdiag: $(NTSC_ADCDIAG_BITSTREAM)
+
+$(NTSC_ADCDIAG_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set ADC_DIAG 1 $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
+
+$(NTSC_ADCDIAG_PNR): $(NTSC_ADCDIAG_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
+	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
+		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
+
+$(NTSC_ADCDIAG_BITSTREAM): $(NTSC_ADCDIAG_PNR)
+	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+
+ntsc-adcdiag-program: $(NTSC_ADCDIAG_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
 
 # Start in the existing HDMI oscilloscope view, without relying on UART.
@@ -474,18 +501,20 @@ sim-tape: | $(BUILD_STAMP)
 # Calibration across a whole conversion period of output delay, a switching
 # window a third of a period wide, drift in both directions (small enough to
 # ride out, and large enough to force a re-sweep), the production window
-# length, and the negative control: at 20 ns, rotation 4 puts the read inside
-# the switching window and must not come back clean.
-# Fields: TOD SWITCH AUTO rotation EXPECT_BAD DRIFT WIN_W
+# length, the negative control -- at 20 ns, rotation 4 puts the read inside
+# the switching window and must not come back clean -- and bits 0, 1, 4, 5
+# glitching as on the board, where the calibration must settle on one sweep.
+# Fields: TOD SWITCH AUTO rotation EXPECT_BAD DRIFT WIN_W [NOISY]
 sim-adc-front: | $(BUILD_STAMP)
 	@for cfg in "0 5000 1 0 0 0 12" "8000 5000 1 0 0 0 12" "16000 5000 1 0 0 0 12" \
 	            "24000 5000 1 0 0 0 12" "32000 5000 1 0 0 0 12" "38000 5000 1 0 0 0 12" \
 	            "20000 14000 1 0 0 0 12" "20000 5000 1 0 0 6000 12" "20000 5000 1 0 0 -14000 12" \
-	            "28000 5000 1 0 0 0 14" "20000 5000 0 4 1 0 12"; do \
+	            "28000 5000 1 0 0 0 14" "20000 5000 0 4 1 0 12" \
+	            "12000 5000 1 0 0 0 12 1" "30000 5000 1 0 0 0 12 1"; do \
 		set -- $$cfg; \
 		$(TOOL) iverilog -g2012 -s adc_front_tb -Padc_front_tb.TOD=$$1 -Padc_front_tb.SWITCH=$$2 \
 			-Padc_front_tb.AUTO=$$3 -Padc_front_tb.MANUAL=$$4 -Padc_front_tb.EXPECT_BAD=$$5 \
-			-Padc_front_tb.DRIFT=$$6 -Padc_front_tb.WIN_W=$$7 \
+			-Padc_front_tb.DRIFT=$$6 -Padc_front_tb.WIN_W=$$7 -Padc_front_tb.NOISY=$${8:-0} \
 			-o $(BUILD_DIR)/adc_front_tb src/adc_front.v sim/gowin_prim_sim.v sim/adc_front_tb.v || exit $$?; \
 		$(TOOL) vvp -n $(BUILD_DIR)/adc_front_tb > $(BUILD_DIR)/adc_front_tb.log; rc=$$?; \
 		grep -E '^adc_front|FATAL' $(BUILD_DIR)/adc_front_tb.log; test $$rc -eq 0 || exit 1; \

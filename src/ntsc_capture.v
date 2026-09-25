@@ -79,6 +79,8 @@ module ntsc_capture #(
     parameter         AUTO_PHASE   = 1'b1,
     // adc_front's counting window, 2^ADC_WIN_W samples.  Benches shorten it.
     parameter integer ADC_WIN_W    = 14,
+    parameter         ADC_CLK_SWAP = 1'b0,   // adc_front's CLK_D1_FIRST
+    parameter         ADC_DIAG     = 1'b0,   // adc_front's DIAG
     parameter         COLOUR       = 1'b1
 ) (
     input  wire        clk,            // pixel clock, 25.2 MHz, one sample each
@@ -93,6 +95,15 @@ module ntsc_capture #(
     input  wire [3:0]  rot_sel,       // converter clock rotation, AUTO_PHASE off
     output wire [3:0]  rot_in_use,
     output wire        adc_cal_done,
+    output wire [5:0]  adc_sweeps,
+    output wire        adc_pair_x,
+    output wire [15:0] adc_track,
+    input  wire [3:0]  adc_dbg_rot,
+    output wire [15:0] adc_dbg_cx,
+    output wire [15:0] adc_dbg_cy,
+    input  wire [2:0]  adc_dbg_bit,
+    output wire [15:0] adc_dbg_bx,
+    output wire [15:0] adc_dbg_by,
     input  wire [1:0]  gain_sel,
 
     output reg         wr_en,
@@ -133,10 +144,21 @@ module ntsc_capture #(
     // The converter's interface and its read timing: see adc_front.
     wire [7:0] adc_r;
     reg        otr_r;
-    adc_front #(.AUTO(AUTO_PHASE), .WIN_W(ADC_WIN_W)) u_adc (
+    wire [ADC_WIN_W:0] adc_track_w;
+    assign adc_track = adc_track_w;   // WIN_W <= 15
+    wire [ADC_WIN_W:0] adc_dbg_cx_w, adc_dbg_cy_w, adc_dbg_bx_w, adc_dbg_by_w;
+    assign adc_dbg_bx = adc_dbg_bx_w;
+    assign adc_dbg_by = adc_dbg_by_w;
+    assign adc_dbg_cx = adc_dbg_cx_w;
+    assign adc_dbg_cy = adc_dbg_cy_w;
+    adc_front #(.AUTO(AUTO_PHASE), .WIN_W(ADC_WIN_W), .CLK_D1_FIRST(ADC_CLK_SWAP),
+                .DIAG(ADC_DIAG)) u_adc (
         .pclk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_clk(adc_clk),
         .manual_rot(rot_sel), .sample(adc_r), .rot_in_use(rot_in_use),
-        .cal_done(adc_cal_done)
+        .cal_done(adc_cal_done), .sweeps(adc_sweeps), .pair_x(adc_pair_x),
+        .track_count(adc_track_w),
+        .dbg_rot(adc_dbg_rot), .dbg_cx(adc_dbg_cx_w), .dbg_cy(adc_dbg_cy_w),
+        .dbg_bit(adc_dbg_bit), .dbg_bx(adc_dbg_bx_w), .dbg_by(adc_dbg_by_w)
     );
     always @(posedge clk) otr_r <= adc_otr;   // a diagnostic only
 

@@ -26,7 +26,13 @@ module top_ntsc_hdmi #(
     // the HDMI output always has.
     parameter         TAPE        = 1'b0,
     // adc_front's counting window, 2^ADC_WIN_W samples.  Benches shorten it.
-    parameter integer ADC_WIN_W   = 14
+    parameter integer ADC_WIN_W   = 14,
+    // Show adc_front's state in the bottom four rows of the picture.
+    parameter         ADC_STRIP   = 1'b1,
+    parameter         ADC_CLK_SWAP = 1'b0,
+    // Diagnostic: the calibration off, the rotation stepping 0..9 every
+    // 0.67 s, and each bit's two difference counts in the strip.
+    parameter         ADC_DIAG    = 1'b0
 ) (
     input  wire       clk27,
 
@@ -105,6 +111,17 @@ module top_ntsc_hdmi #(
     reg [3:0]  phase_sel;    // converter clock rotation, 0..9
     wire [3:0] phase_used;   // the rotation in use
     wire       adc_cal_done;
+    wire [5:0] adc_sweeps;
+    reg  [3:0] adc_dbg_rot = 4'd0;
+    wire [15:0] adc_dbg_cx, adc_dbg_cy, adc_dbg_bx, adc_dbg_by;
+    reg  [23:0] diag_timer = 24'd0;
+    reg  [3:0]  diag_rot = 4'd0;
+    always @(posedge pixel_clk) begin
+        diag_timer <= diag_timer + 24'd1;
+        if (&diag_timer) diag_rot <= (diag_rot == 4'd9) ? 4'd0 : diag_rot + 4'd1;
+    end
+    wire       adc_pair_x;
+    wire [15:0] adc_track;
     reg [1:0]  gain_sel;
     reg        scope_only;
     reg [26:0] hunt_cnt;
@@ -154,11 +171,16 @@ module top_ntsc_hdmi #(
                    // A tape is recorded once and held: re-recording while it
                    // is on screen would mix two recordings in one frame.
                    .DUMP_AW(DUMP_AW), .SCOPE_LIVE(!TAPE),
-                   .ADC_WIN_W(ADC_WIN_W)) capture (
+                   .ADC_WIN_W(ADC_WIN_W), .ADC_CLK_SWAP(ADC_CLK_SWAP),
+                   .ADC_DIAG(ADC_DIAG), .AUTO_PHASE(!ADC_DIAG)) capture (
         .clk(pixel_clk), .fclk(serial_clk), .rst_n(vid_rst_n),
         .adc_d(adc_d), .adc_otr(adc_otr),
         .adc_clk(adc_clk), .adc_clamp(adc_clamp),
-        .rot_sel(phase_sel), .rot_in_use(phase_used), .adc_cal_done(adc_cal_done),
+        .rot_sel(ADC_DIAG ? diag_rot : phase_sel), .rot_in_use(phase_used),
+        .adc_cal_done(adc_cal_done),
+        .adc_sweeps(adc_sweeps), .adc_pair_x(adc_pair_x), .adc_track(adc_track),
+        .adc_dbg_rot(adc_dbg_rot), .adc_dbg_cx(adc_dbg_cx), .adc_dbg_cy(adc_dbg_cy),
+        .adc_dbg_bit(adc_dbg_rot[2:0]), .adc_dbg_bx(adc_dbg_bx), .adc_dbg_by(adc_dbg_by),
         .gain_sel(gain_sel),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_bank(wr_bank),
         .line_done(line_done), .vsync_pulse(vsync_pulse),
@@ -529,9 +551,28 @@ module top_ntsc_hdmi #(
                          : 4'd0;
     wire [7:0]  tape_grey;   // 16 + 14 * nibble; see g_tape_grey at the end
 
-    wire [7:0] out_r = TAPE ? tape_grey : scope_sync ? diagnostic_r : bg_r;
-    wire [7:0] out_g = TAPE ? tape_grey : scope_sync ? diagnostic_g : bg_g;
-    wire [7:0] out_b = TAPE ? tape_grey : scope_sync ? diagnostic_b : bg_b;
+    // The converter interface's state, always on, in the bottom four rows:
+    // 32 cells of 16 pixels, MSB first, white = 1, the same encoding as the
+    // scope identity.  A, rotation, calibrated, pair (x = 1), sweeps so far,
+    // and the last tracking window's difference count -- near zero when the
+    // read is clean.  Readable off any capture without a button or the UART.
+    wire [31:0] adc_word = {4'hA, phase_used, adc_cal_done, adc_pair_x,
+                            adc_sweeps, adc_track};
+    // Above it, the last sweep's two counts for one rotation, a different
+    // rotation each frame: 5, rotation, then each count / 8 in twelve bits.
+    always @(posedge pixel_clk)
+        if (x == 0 && y == 0) adc_dbg_rot <= (adc_dbg_rot == 4'd9) ? 4'd0 : adc_dbg_rot + 4'd1;
+    wire [31:0] adc_word2 = ADC_DIAG
+        ? {3'b101, adc_dbg_rot[2:0], phase_used, adc_dbg_bx[14:4], adc_dbg_by[14:4]}
+        : {4'h5, adc_dbg_rot, adc_dbg_cx[14:3], adc_dbg_cy[14:3]};
+    wire on_adc_word = ADC_STRIP && !TAPE && y_d >= 11'd472 && y_d < 11'd480 &&
+                       x < 11'd512;
+    wire [31:0] adc_show = (y_d >= 11'd476) ? adc_word : adc_word2;
+    wire [7:0] adc_rgb = adc_show[31 - x[8:4]] ? 8'hFF : 8'h00;
+
+    wire [7:0] out_r = TAPE ? tape_grey : on_adc_word ? adc_rgb : scope_sync ? diagnostic_r : bg_r;
+    wire [7:0] out_g = TAPE ? tape_grey : on_adc_word ? adc_rgb : scope_sync ? diagnostic_g : bg_g;
+    wire [7:0] out_b = TAPE ? tape_grey : on_adc_word ? adc_rgb : scope_sync ? diagnostic_b : bg_b;
 
     hdmi_out out (
         .pixel_clk(pixel_clk), .serial_clk(serial_clk), .reset_n(vid_rst_n),

@@ -1161,6 +1161,93 @@ reproduced byte for byte by `make ntsc`.
 The IO registers and the read-phase calibration stay: each removes a real
 placement dependence, and they cost nothing.
 
+### The decoder on the pixel clock, with no ALU cells (branch `sample-clock`)
+
+Everything but the converter's clock now runs on the 25.2 MHz pixel clock, one
+sample per clock, and is built with `synth_gowin -nodsp -noalu`: 0 ALU cells,
+58% of LUTs, about 50 MHz against 25.2 needed.  Every bench reproduces its
+126 MHz figure (sim-video `max_error=17`, capture 379/400 and weak 400/400,
+reference 4.36/4.89/7.45 deg, tracking 4.41), and replaying both M5
+recordings, every bar's hue matches the 126 MHz design within 0.2 degrees.
+
+**The converter interface** (`src/adc_front.v`) had to change shape.  A
+ten-read `IDES10` per bit would be ideal and cannot be had: it takes both IO
+cells of a pin pair, and every data pin on this board shares its pair with
+another ADC signal (nextpnr refuses it).  Instead each bit is an `IDDR` on the
+pixel clock -- two reads a conversion, rising (the sample) and falling (the
+witness) -- and the converter's clock comes from an `ODDR` on 126 MHz sending
+`1111100000` rotated in 3.97 ns steps.  The AD9280's outputs are latched, so
+two reads with no switching between them agree bit for bit whatever the
+video does; counting disagreements per rotation locates the switching, and
+the centre of the longer quiet run is at least a quarter conversion from every
+read whatever the pixel clock's duty cycle.  `make sim-adc-front` covers a
+whole period of output delay, a 14 ns switching window, drift both ways,
+glitching bits, and a negative control.
+
+**Two things one sample per clock broke, both silent:**
+
+- `burst_nco` registered its correlator weights from the phase.  At five
+  clocks per sample the lag was invisible; at one it paired every sample with
+  the previous sample's phase, 51 degrees against the demodulator, which pairs
+  them correctly.  sim-video: `max_error=216`, with sync, lock and black all
+  perfect.  The weights now come straight from the current phase.
+- The last burst product reaches `sum_r` three clocks after the gate falls,
+  which at five clocks per sample had always happened by the next strobe.  The
+  fall is now acted on by clock count, and a gate restart drops the pipeline.
+
+The colour pipeline costs samples at this rate: rgb is four samples later
+(`PIPE`), `y_delay` is two longer to keep luma with it, and writes start four
+later so every pixel stays put.  The period arithmetic is registered one
+sample ahead (`rcnt + 1`); the window compares are combinational.
+
+**Bits 0, 1, 4 and 5 read noisily, and the calibration must not count them.**
+`make ntsc-adcdiag` steps the rotation through 0..9 and shows each bit's
+rising/falling disagreement (`scripts/adc_diag.py` records a few seconds of
+the strip as video and tabulates it).  Bits 2, 3, 6 and 7 -- pins 72, 76, 75,
+77, the top bank -- read exactly alike at four rotations of ten, as a latched
+output should.  Bits 0, 1, 4 and 5 -- pins 27..30, the bottom bank beside the
+HDMI pins -- disagree on 3 to 13 percent of conversions at *every* rotation.
+Counted in, no rotation was ever quiet: the calibration re-swept for ever (63
+sweeps within seconds) while the picture still looked fine, because a moving
+read instant shifts burst and chroma alike.  `CAL_MASK` now counts the top
+bank only; on the board every seed then settles once, at rotation 3, with 0
+disagreements in 16384.  Why the bottom bank misreads is not known --
+crosstalk from the TMDS pins and slow edges are the candidates -- and it may
+be costing noise in those four bits.
+
+**The strip.**  The bottom eight rows of the picture carry the interface's
+state as two 32-bit words, 16-pixel cells, white = 1 (`ADC_STRIP`): rotation,
+calibrated, pair, sweeps so far, the last tracking window's disagreement
+count, and one rotation's sweep counts per frame.  `scripts/adc_strip.py`
+reads it from captures.  **Sweeps must stay at 1 and track at 0**; anything
+else means the read is not clean, however good the picture looks.
+
+**What it did not fix: a placement-dependent miscompute in the colour path.**
+Three seeds of one netlist, the read measured clean and identical on all
+three (rotation 3, 0 disagreements):
+
+| seed | correct rows | colour frames | line-to-line | hue errors (G/M/R/B) |
+|---|---|---|---|---|
+| 3 | 100.0% | 120/120 | 1.9..3.6 deg | -1.5 / -1.2 / -4.4 / +12.3 |
+| 5 | 100.0% | 120/120 | 1.9..3.6 deg | -1.6 / -1.6 / -5.0 / +11.9 |
+| 11 | 89.7% | **60/120** | **~100 deg** | -14 / -43 / -47 / +25 |
+
+Luma is right on all three; only colour fails, with a random hue per line --
+the burst's angle is being computed wrongly.  There are no ALU cells and no
+signed comparisons, the ADC read is the same, and timing passes with a factor
+of two, so this is not #514 or #541's known triggers, and it follows the
+placement exactly as those did.  An earlier netlist of the same RTL failed at
+seeds 3 and 5 and passed at 11; with the strip added all three passed.  **So a
+seed is still chosen by measurement**, and the shipping seed is 3.  The
+measured-good 126 MHz build (master, seed 11) against the same M5 boot: 89.1%
+correct, 4.3..4.8 deg line to line -- the pixel-clock design at a good seed is
+better on every figure.
+
+Locating the miscompute is the next step: show the burst's i, q and the
+CORDIC's angle in the strip, find a failing seed of *that* netlist, and check
+the angle against atan2 of its own inputs offline.  Instrumenting moves the
+placement, so expect to hunt for a failing seed again.
+
 ### The M5's blanking levels depend on its boot
 
 A second recording, after the M5 had been power-cycled, showed different junk
