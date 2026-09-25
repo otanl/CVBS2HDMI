@@ -1183,16 +1183,27 @@ the M5 rebooted between the two recordings, and every bar's chroma changed by a
 different factor (0.13..1.67) and the burst's third harmonic by 22 dB, which no
 capacitor does.  A before/after of the filter needs one M5 boot on both sides.
 
-### Why the crawl cannot be removed digitally
+### Removing the crawl digitally: only a five-line comb, and only on a still pattern
 
 Both products are exact multiples of the M5's line (6 fsc and 8 fsc are 1365
-and 1820 cycles a line) while chroma alternates, so a one-line comb would
-cancel them in the analogue domain.  It does not survive sampling: a line is
-1601.58 samples, and a fractional delay interpolated on the samples shifts an
-alias as the 3.7 MHz tone it appears to be, not as the 21.5 or 28.6 MHz tone it
-is -- a 0.58-sample delay is off by about 150 degrees, so nothing cancels.
-Averaging ten or so lines vertically smears real pictures, and a field comb
-needs the SDRAM frame buffer.  The fix is analogue.
+and 1820 cycles a line) while chroma alternates, so a comb along the lines
+separates them -- but only over a delay that is a whole number of samples.
+One line is 1601.6 samples, and a fractional delay interpolated on the samples
+shifts an alias as the 3.7 MHz tone it appears to be, not as the 21.5 or
+28.6 MHz tone it is, so nothing cancels.  **Five lines are 8008 samples**:
+over them chroma turns 1137.5 cycles and inverts while both products turn a
+whole number and repeat, so `(x[n] - x[n-8008]) / 2` keeps chroma and cancels
+them.  Measured on the three M5 recordings: chroma unchanged, aliases
+-14..-19 dB -- nearly what the LC filter is expected to do.
+
+It is not a fix for real pictures.  It assumes the picture is the same five
+lines (ten picture lines) apart, which is true of bars and false of anything
+else, where it smears colour vertically; and it relies on the M5's clock
+matching ours -- five lines are 8007.94 samples on these recordings, and a
+larger crystal offset loses the cancellation.  Real sources filter their
+output and never carry the products.  The analogue filter removes them for
+any picture; the comb would only be worth building as an M5-only mode.  Not
+built.
 
 ### An LC anti-alias filter on R3's pads (*Planned*, parts arriving)
 
