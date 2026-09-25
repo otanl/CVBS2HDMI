@@ -1124,6 +1124,65 @@ The `adc_clk_r` comment in `ntsc_capture.v` -- "a mux here cost the picture
 half its rows" -- was this same effect: any change to the design moved the
 read instant.
 
+### The rest of the placement lottery is Apicula's ALU bug, not the sampling instant
+
+The section above says the fixed read phase is "probably the explanation" for
+the rebuild-to-rebuild swings.  It is one mechanism, and the next experiment
+showed it is not the only one.
+
+The ADC now runs through the pins' own IO logic -- `IDDR` on `adc_d`, `ODDR` on
+`adc_clk` -- so the round trip no longer passes through the router (the report
+shows 8 IOLOGICI and 4 IOLOGICO; timing rose to 150 MHz).  Two seeds of that
+design, measured back to back on the board:
+
+| | green | magenta | red | blue | wobble |
+|---|---|---|---|---|---|
+| seed 11 | -4 | -9 | -12 | +1 | 5..6 |
+| seed 3 | -15 | -34 | -50 | -21 | 23..25 |
+| replay | -4 | -1 | -4 | +10 | 3..7 |
+
+With the interface fixed in silicon the two builds still disagree, so the
+chroma arithmetic itself computes differently by placement.  That is
+[YosysHQ/apicula#514](https://github.com/YosysHQ/apicula/issues/514): "design
+with yosys-inferred ALU carry cells computes wrong on silicon; RTL sim,
+gate-level netlist sim, and timing all pass; `synth_gowin -noalu` fixes it".
+A nextpnr fix landed in July 2026 (our suite, 2026-08-25, has it) and cured the
+reporters' designs up to about 800 ALU cells, but they still see failures at
+3300.  This design has about 4300.
+
+`-noalu` is the known cure and it does not fit: without carry cells the
+126 MHz domain reaches 93..103 MHz.  Almost all of that logic only has to
+settle once per sample, five clocks, so the way to an ALU-free build is to run
+the sample-rate logic on the 25.2 MHz pixel clock and keep 126 MHz for the IO
+front end only.  Until then: **choose the seed by measurement on the board,
+every time the RTL changes** -- seed 11 for the current RTL, 151.7 MHz,
+reproduced byte for byte by `make ntsc`.
+
+The IO registers and the read-phase calibration stay: each removes a real
+placement dependence, and they cost nothing.
+
+### The M5's blanking levels depend on its boot
+
+A second recording, after the M5 had been power-cycled, showed different junk
+in its two DMA line buffers: front porch 99/115 alternating (it had been 117 on
+every line), back porch 114/99, black bar 101/117.  The front-porch black
+reference banded again (45 codes).  In both boots, on every line, one porch
+read true blanking and the other the burst's low level -- never the reverse --
+so black is now the higher of the two, averaged at quarter weight across lines.
+Replayed: black 116..117 and 114..115, white-bar line-to-line change 1.8 and
+2.8 codes for the two boots; on the board 0.8..1.2.
+
+Two things this also broke, now fixed: `tape_trim.py` slices at tip + 8 (a
+porch at 99 sat under the old midpoint slice) and keeps only sync pulses with a
+partner one line away (the M5's sync-level black bar has none).  And the
+recorder can trigger during the vertical interval right after programming,
+before the field is known -- about one recording in seven; record again.
+
+**C13 is now 680 pF.**  Its effect on the alias products could not be measured:
+the M5 rebooted between the two recordings, and every bar's chroma changed by a
+different factor (0.13..1.67) and the burst's third harmonic by 22 dB, which no
+capacitor does.  A before/after of the filter needs one M5 boot on both sides.
+
 ### Apicula has an open placement-dependent miscompute bug on this exact chip
 
 **The same RTL produces different functional results depending only on

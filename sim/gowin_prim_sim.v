@@ -102,3 +102,34 @@ module TLVDS_OBUF(input wire I, output wire O, OB);
     assign O=I;
     assign OB=~I;
 endmodule
+
+// IO-logic registers, behaviourally.  Yosys's own models for these are empty.
+// IDDR: Q0 is the rising-edge capture and Q1 the falling-edge one, both
+// presented at the rising edge; the capture uses Q0 only.
+module IDDR (input wire D, input wire CLK, output reg Q0 = 1'b0, output reg Q1 = 1'b0);
+    parameter Q0_INIT = 1'b0;
+    parameter Q1_INIT = 1'b0;
+    reg fall = 1'b0;
+    always @(negedge CLK) fall <= D;
+    always @(posedge CLK) begin
+        Q0 <= D;
+        Q1 <= fall;
+    end
+endmodule
+
+// ODDR: D0 in the first half of the clock, D1 in the second; Q1 carries TX
+// for a tristate buffer.  The ADC clock drives both with the same value.
+module ODDR (input wire D0, input wire D1, input wire TX, input wire CLK,
+             output wire Q0, output wire Q1);
+    parameter TXCLK_POL = 0;
+    parameter INIT = 0;
+    reg r0 = 1'b0, r1 = 1'b0;
+    always @(posedge CLK) begin
+        r0 <= D0;
+        r1 <= D1;
+    end
+    assign Q0 = CLK ? r0 : r1;
+    assign Q1 = TX;
+endmodule
+
+`default_nettype wire

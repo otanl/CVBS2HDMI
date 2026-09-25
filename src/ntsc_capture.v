@@ -22,8 +22,10 @@ module ntsc_capture #(
     // See CLAUDE.md.  A source with a full-amplitude burst should enable it.
     parameter integer BURST_GAP_SAMPLES = 262142,
     parameter         CLAMP_ENABLE  = 1'b0,
-    parameter integer BP_START      = LEGACY_TIMING ? 305 : 200,
-    parameter integer BP_END        = BP_START + 32,
+    // Standard timing reads 16 samples of back porch, well clear of the burst's
+    // end (~197) and of the picture's start (~237); legacy keeps its 32.
+    parameter integer BP_START      = LEGACY_TIMING ? 305 : 210,
+    parameter integer BP_END        = BP_START + (LEGACY_TIMING ? 32 : 16),
     parameter integer BURST_START   = LEGACY_TIMING ? 240 : 136,
     parameter integer BURST_END     = LEGACY_TIMING ? 300 : 192,
     parameter integer ACTIVE_START  = LEGACY_TIMING ? 313 : 252,
@@ -125,7 +127,23 @@ module ntsc_capture #(
     reg [2:0] phase, phase_r;
     reg [7:0] adc_r;
     reg       otr_r;
-    reg       adc_clk_r;
+
+    // The converter's clock goes out, and its data comes in, through registers
+    // in the pins' own IO logic.  With fabric registers both paths ran through
+    // the router, so every placement moved the read instant against the
+    // converter's output by a few nanoseconds -- against read points 7.9 ns
+    // apart, enough that one build decoded colour and the next did not, from
+    // the same RTL.  The IO registers' timing is fixed by the silicon.
+    wire [7:0] adc_io;
+    genvar     bi;
+    generate
+        for (bi = 0; bi < 8; bi = bi + 1) begin : g_adc_in
+            IDDR u_in (.D(adc_d[bi]), .CLK(clk_cap), .Q0(adc_io[bi]), .Q1());
+        end
+    endgenerate
+    wire adc_clk_next = (phase == 3'd4) || (phase == 3'd0);
+    ODDR u_adc_clk (.D0(adc_clk_next), .D1(adc_clk_next), .TX(1'b0),
+                    .CLK(clk_cap), .Q0(adc_clk), .Q1());
 
     wire [2:0] sel_index = (phase_sel == 3'd0) ? 3'd4 : (phase_sel - 3'd1);
     reg  [2:0] auto_cap;
@@ -135,24 +153,16 @@ module ntsc_capture #(
 
     always @(posedge clk_cap or negedge rst_n) begin
         if (!rst_n) begin
-            phase <= 3'd0; phase_r <= 3'd0; adc_r <= 8'd0; adc_clk_r <= 1'b0;
+            phase <= 3'd0; phase_r <= 3'd0; adc_r <= 8'd0;
             otr_r <= 1'b0;
         end else begin
             phase     <= (phase == 3'd4) ? 3'd0 : phase + 3'd1;
             phase_r   <= phase;
-            adc_r     <= adc_d;
+            adc_r     <= adc_io;
             otr_r     <= adc_otr;
-            // The ADC clock leaves the die through this register.  A 60%-duty
-            // option once "cost the picture half its rows"; with the read
-            // phase fixed, any change to the design moved the read instant
-            // relative to the converter's output, and that was the cost.  The
-            // read phase is now calibrated (AUTO_PHASE below), but keep this
-            // path a bare register all the same.
-            adc_clk_r <= (phase == 3'd4) || (phase == 3'd0);
         end
     end
 
-    assign adc_clk = adc_clk_r;
     wire sample_stb = (phase_r == cap_index);
 
     // Sampling-instant calibration.
@@ -438,17 +448,22 @@ module ntsc_capture #(
     assign slice_max   = f_max;
     assign slice_thr   = thr;
 
-    // Front-porch black reference (standard timing).
+    // Black reference (standard timing): the higher of the two porches, lightly
+    // smoothed across lines.
     //
-    // The back porch is not blanking on every source.  The M5 generator leaves
-    // it at 101 on alternate lines where blanking is 117 -- its two DMA line
-    // buffers carry different breezeway and back-porch levels -- and a per-line
-    // clamp on it moved the black reference 16 codes every other line, which
-    // the luma gain turned into 45-code horizontal banding.  In the same
-    // recording the front porch reads 117 on every line, and it is blanking by
-    // definition on any NTSC source.
+    // Neither porch is blanking on every line of the M5.  Its two DMA line
+    // buffers are written only during the vertical interval, so the blanking
+    // they carry depends on the boot: one boot gave front porch 117 on every
+    // line and back porch 117/101 alternating, the next front porch 99/115 and
+    // back porch 114/99.  Clamping to either porch moves black 16 codes every
+    // other line -- 45 codes of luma banding after the gain.  What held in both
+    // boots, on every line, is that one porch reads true blanking and the other
+    // the burst's low level, never the reverse.  So take the higher of the two:
+    // on a standard source both are blanking and the maximum of two averages is
+    // biased by a fraction of a code.  A quarter-weight IIR across lines takes
+    // out what alternation is left (113 against 115 on the second boot).
     //
-    // A 16-sample running sum of the raw samples, delayed so that when the
+    // Front porch: a 16-sample running sum of the raw samples, delayed so that when the
     // low-passed slicer first drops below threshold -- the leading edge as the
     // slicer sees it, a dozen samples after the true one -- the window sits on
     // the front porch, clear of both the end of the picture and the edge's own
@@ -474,6 +489,10 @@ module ntsc_capture #(
     end
 
     reg [12:0] bp_acc;
+    reg  [7:0] fp_line;         // front porch of the current line
+    reg  [9:0] black_q;         // black * 4, the smoothed reference
+    wire [7:0] bp_val    = bp_acc[11:4];                 // 16-sample average
+    wire [7:0] porch_max = (fp_line > bp_val) ? fp_line : bp_val;
     reg [7:0]  s_even;
 
     reg [19:0] hist [0:15];
@@ -655,6 +674,7 @@ module ntsc_capture #(
             run_max <= 16'd0; run_max_acc <= 16'd0;
             run_peak <= 16'd0; run_lines <= 8'd0; peak_pend <= 1'b0;
             bp_acc <= 13'd0; black <= 8'd134; s_even <= 8'd0; clamp_win <= 1'b0;
+            fp_line <= 8'd134; black_q <= 10'd536;
             hb_idx <= 4'd0; hb_val <= 20'd0; hb_pend <= 1'b0;
             for (hi = 0; hi < 16; hi = hi + 1) begin
                 hist[hi]     <= 20'd0;
@@ -907,11 +927,17 @@ module ntsc_capture #(
                     bp_acc <= 13'd0;
                 end else if (in_bp) begin
                     bp_acc <= bp_acc + {5'd0, adc_r};
-                end else if (cpos == BP_END && LEGACY_TIMING) begin
-                    black <= bp_acc[12:5];        // 32-sample average
+                end else if (cpos == BP_END) begin
+                    if (LEGACY_TIMING) begin
+                        black <= bp_acc[12:5];        // 32-sample average
+                    end else begin
+                        // max(front porch, back porch), then black_q is black
+                        // times four and moves a quarter of the way each line.
+                        black_q <= black_q + {2'd0, porch_max} - {2'd0, black_q[9:2]};
+                        black   <= black_q[9:2];
+                    end
                 end
-                // Standard timing takes black from the front porch; see fp_cand.
-                if (!LEGACY_TIMING && line_real) black <= fp_cand;
+                if (line_real) fp_line <= fp_cand;   // this line's front porch
 
                 if (in_active) begin
                     if (!a_idx[0]) begin

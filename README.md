@@ -109,7 +109,7 @@ python3 scripts/live_capture.py build/tape 12 8
 python3 scripts/tape_decode.py build/tape.hex build/tape_0*.png   # 12フレームで多数決
 python3 scripts/tape_trim.py build/tape.hex sim/my_tape.hex 18    # 偶数ライン分に切り出す
 ./scripts/tool iverilog -g2012 -s replay_tb -o build/replay_tb \
-    src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/replay_tb.v
+    src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v sim/replay_tb.v
 ./scripts/tool vvp build/replay_tb +stim=sim/my_tape.hex +nsamp=<行数> +lines=400 +out=build/replay.txt
 python3 scripts/replay_quality.py build/replay.txt --png build/replay.png  # 実機と同じ尺度で評価
 python3 scripts/tape_reference.py sim/my_tape.hex                          # 浮動小数点の参照復号

@@ -16,16 +16,25 @@ import sys
 
 
 def sync_edges(s, blank, tip):
-    mid = (blank + tip) / 2.0
-    edges, n = [], 30
+    """Sync leading edges: a run of 100+ samples just above the sync tip, with
+    another such run one line away.  The M5 can hold its
+    black bar near sync-tip level on alternate lines, which makes a
+    sync-length pulse too, but only every other line -- so it has no partner
+    a line away and drops out.  The porches are not used: the M5 leaves them
+    at different levels from one boot to the next."""
+    # Just above the tip, not halfway to blanking: the M5 parks some porches at
+    # the burst's low level, 98..101, which a midpoint slice would catch.
+    mid = tip + 8
+    cands, n = [], 30
     while n < len(s) - 120:
-        if (s[n] < mid <= s[n-1] and all(v < mid for v in s[n:n+90])
-                and abs(sum(s[n-25:n-5]) / 20.0 - blank) < 3):
-            edges.append(n)
-            n += 1400
+        if s[n] < mid <= s[n-1] and all(v < mid for v in s[n:n+100]):
+            cands.append(n)
+            n += 100
         else:
             n += 1
-    return edges
+    line = 1601.6
+    return [c for c in cands
+            if any(abs(abs(d - c) - line) < 4 for d in cands if d != c)]
 
 
 def main():
@@ -39,7 +48,7 @@ def main():
     for v in s:
         if tip + 15 < v < tip + 60:
             counts[v] = counts.get(v, 0) + 1
-    blank = max(counts, key=counts.get)
+    blank = max(counts, key=counts.get)   # only sets the slicing midpoint
     edges = sync_edges(s, blank, tip)
     periods = [b - a for a, b in zip(edges, edges[1:]) if b - a < 1700]
     period = (edges[-1] - edges[0]) / round((edges[-1] - edges[0]) / 1601.6)

@@ -192,7 +192,7 @@ sim: | $(BUILD_STAMP)
 # from the command line, e.g.
 #   make sim-capture SIMARGS="-Pntsc_capture_tb.Q_QUALIFY=110"
 SIMARGS ?=
-CAPTURE_SIM_RTL := src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v
+CAPTURE_SIM_RTL := src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v
 sim-capture: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s ntsc_capture_tb -o build/ntsc_capture_tb $(SIMARGS) \
 		$(CAPTURE_SIM_RTL) sim/ntsc_capture_tb.v
@@ -325,10 +325,11 @@ $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-# Seed 11, chosen by measurement on the board: of seeds 3, 5, 7, 11 and 13 it
-# gave the least line-to-line hue wobble (4.8 deg against 5.7..9.6) and hues
-# closest to the floating-point reference, at 143.2 MHz.  A seed is part of
-# the build: re-measure after any RTL change (CLAUDE.md).
+# Seed 11, chosen by measurement on the board and re-measured after the ADC
+# moved into IO registers: hue within 12 deg of the replay and 5..6 deg of
+# line-to-line wobble, where seed 3 gave 50 deg and 24 -- Apicula's ALU bug
+# (CLAUDE.md), so a seed is part of the build.  151.7 MHz.  Re-measure after
+# any RTL change.
 NTSC_SEED ?= 11
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
