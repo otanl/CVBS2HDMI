@@ -1222,31 +1222,51 @@ count, and one rotation's sweep counts per frame.  `scripts/adc_strip.py`
 reads it from captures.  **Sweeps must stay at 1 and track at 0**; anything
 else means the read is not clean, however good the picture looks.
 
-**What it did not fix: a placement-dependent miscompute in the colour path.**
-Three seeds of one netlist, the read measured clean and identical on all
-three (rotation 3, 0 disagreements):
+**The colour failures were the burst tracker, not the toolchain.**  With the
+read clean, one load in two still lost colour -- colour on half the frames, a
+random-looking hue on every line -- and it looked like placement: three seeds
+of one netlist gave two good and one bad.  It is not.  **The same bitstream,
+loaded again, went from bad to good and back**, and the strip showed why: the
+burst's measured angle was right (the CORDIC matches atan2 of its own inputs
+within 0.2 degrees, every frame, good runs and bad), but the tracked angle
+`burst_off` was cycling round it -- two values about 160 degrees apart, or
+three about 120 apart.
 
-| seed | correct rows | colour frames | line-to-line | hue errors (G/M/R/B) |
-|---|---|---|---|---|
-| 3 | 100.0% | 120/120 | 1.9..3.6 deg | -1.5 / -1.2 / -4.4 / +12.3 |
-| 5 | 100.0% | 120/120 | 1.9..3.6 deg | -1.6 / -1.6 / -5.0 / +11.9 |
-| 11 | 89.7% | **60/120** | **~100 deg** | -14 / -43 / -47 / +25 |
+`burst_nco` predicts each line's burst angle from the last plus a learned
+per-line step.  A step a half or a third of a turn wrong is a stable trap: the
+prediction cycles round the measurement, the corrections cancel over the
+cycle, and nothing ever pulls it out.  Whether an acquisition falls in is
+chance -- it depends on where the loop happens to be when the step is seeded --
+so it follows the load, not the build.  `sim-tracking` reproduces it by
+knocking the step half or a third of a turn out: the old tracker stays out by
+94 and 112 degrees, for good.
 
-Luma is right on all three; only colour fails, with a random hue per line --
-the burst's angle is being computed wrongly.  There are no ALU cells and no
-signed comparisons, the ADC read is the same, and timing passes with a factor
-of two, so this is not #514 or #541's known triggers, and it follows the
-placement exactly as those did.  An earlier netlist of the same RTL failed at
-seeds 3 and 5 and passed at 11; with the strip added all three passed.  **So a
-seed is still chosen by measurement**, and the shipping seed is 3.  The
-measured-good 126 MHz build (master, seed 11) against the same M5 boot: 89.1%
-correct, 4.3..4.8 deg line to line -- the pixel-clock design at a good seed is
-better on every figure.
+The fix keeps a running mean of the miss (1/8 a line) and relearns the step
+from the next two measurements when it passes 45 degrees; a right tracker
+misses by a few.  A run of large misses was tried first and is not enough: in
+the three-cycle one line in three lands close and the run never completes --
+the board found that case after simulation passed the two-cycle one.
 
-Locating the miscompute is the next step: show the burst's i, q and the
-CORDIC's angle in the strip, find a failing seed of *that* netlist, and check
-the angle against atan2 of its own inputs offline.  Instrumenting moves the
-placement, so expect to hunt for a failing seed again.
+Measured with the fix, two seeds, five loads each, the same M5 boot:
+
+| | colour frames | correct rows | dropped | line-to-line | hue G/M/R/B |
+|---|---|---|---|---|---|
+| seed 3, loads a..e | 60/60 every time | 99.3..99.6% | 0 | 2.1..3.8 deg | +3.2 / +2.2 / -2.3 / +12.2 |
+| seed 11, loads a..e | 60/60 every time | 99.6..99.7% | 0 | 2.2..3.8 deg | +3.2 / +2.3 / -2.4 / +12.2 |
+
+Every figure agrees across all ten loads to within 0.4 degrees, while the
+calibration settled at rotations 0, 2, 5 and 6 on different loads -- it
+absorbs the load-to-load phase between the 126 MHz counter and the pixel
+clock divider, as designed.  Against the measured 126 MHz build (master,
+seed 11) on the same boot: 89.1% correct, 4.3..4.8 degrees line to line.
+
+**This retires the "placement lottery" as recorded above for the colour
+path.**  The 126 MHz design has the same tracker, and every comparison
+behind "the rest of the placement lottery is Apicula's ALU bug" was one load
+per build, so the trap explains those swings at least as well; it was not
+re-measured there.  The ALU bug is real upstream and `-noalu` costs nothing
+now, so it stays.  The rule that follows: **load a build more than once
+before crediting or blaming its placement.**
 
 ### The M5's blanking levels depend on its boot
 

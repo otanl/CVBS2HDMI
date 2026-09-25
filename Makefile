@@ -331,14 +331,12 @@ $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-# A seed is still part of the build.  The pixel-clock decoder has no ALU cells
-# and its converter read is calibrated and measured clean at every seed tried,
-# but one placement in three still loses colour -- a miscompute in the colour
-# path that follows placement, not timing (CLAUDE.md).  Seed 3, measured on the
-# board 2026-09-25 against seeds 5 and 11 of the same netlist: 100% correct
-# rows, 0 dropped, colour on 120 of 120 frames, 1.9..3.6 deg line to line
-# (seed 5 the same; seed 11 colour on 60 of 120).  Re-measure after any RTL
-# change, and keep the ADC strip's sweeps at 1 and track at 0 while doing it.
+# Any seed works: the decoder has no ALU cells, its converter read is
+# calibrated, and what looked like a placement lottery was the burst tracker's
+# trap, now escaped (CLAUDE.md).  Seeds 3 and 11 measured 2026-09-25, five
+# loads each: colour on every frame, 99.3..99.7% correct rows, figures within
+# 0.4 deg of each other.  Seed 3 is the one make ntsc reproduces byte for
+# byte.  Load a build more than once before crediting or blaming a seed.
 NTSC_SEED ?= 3
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
@@ -539,10 +537,18 @@ test-quality:
 	python3 scripts/test_live_capture.py
 	python3 scripts/test_scope_pull_variant.py
 
+# TRAP=1 knocks the learned step half a turn, or a third, out mid-run -- the
+# states some acquisitions on the board fell into; the tracker must be back
+# within 14 lines.
 sim-tracking: | $(BUILD_STAMP)
-	$(TOOL) iverilog -g2012 -s burst_tracking_tb -o $(BUILD_DIR)/burst_tracking_tb \
-		src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/burst_tracking_tb.v
-	$(TOOL) vvp $(BUILD_DIR)/burst_tracking_tb
+	@for trap in "0 32'h80000000" "1 32'h80000000" "1 32'h55555555" "1 32'hAAAAAAAB"; do \
+		set -- $$trap; \
+		$(TOOL) iverilog -g2012 -s burst_tracking_tb -Pburst_tracking_tb.TRAP=$$1 \
+			-Pburst_tracking_tb.TRAP_ADD=$$2 \
+			-o $(BUILD_DIR)/burst_tracking_tb \
+			src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/burst_tracking_tb.v || exit $$?; \
+		$(TOOL) vvp $(BUILD_DIR)/burst_tracking_tb || exit $$?; \
+	done
 
 sim-reference: | $(BUILD_STAMP)
 	@for args in "0 0" "0 -100" "1 100"; do \

@@ -15,6 +15,7 @@ read and starting again.
     python3 scripts/adc_strip.py 'build/cap_*.png'
 """
 import glob
+import math
 import statistics
 import subprocess
 import sys
@@ -32,7 +33,8 @@ def frame(path):
 
 
 def word(raw, rows=(477, 478), marker=0xA):
-    """The strip's word, or None if a cell is neither black nor white."""
+    """The strip's word, or None if a cell is neither black nor white.
+    marker None accepts any word."""
     value = 0
     for cell in range(32):
         levels = [raw[(y * W + x) * 3 + c] for y in rows
@@ -41,12 +43,41 @@ def word(raw, rows=(477, 478), marker=0xA):
         if 70 < level < 180:
             return None
         value = (value << 1) | (level >= 180)
-    return value if value >> 28 == marker else None
+    return value if marker is None or value >> 28 == marker else None
 
 
 def fields(w):
     return dict(rot=(w >> 24) & 15, cal=(w >> 23) & 1, pair="x" if (w >> 22) & 1 else "y",
                 sweeps=(w >> 16) & 63, track=w & 0xFFFF)
+
+
+def signed16(v):
+    return v - 65536 if v & 0x8000 else v
+
+
+def line_fields(w3, w4):
+    i, q = signed16(w3 >> 16), signed16(w3 & 0xFFFF)
+    cordic = ((w4 >> 17) & 0x7FFF) * 360.0 / 32768
+    ref = math.degrees(math.atan2(q, i)) % 360.0
+    err = (cordic - ref + 180.0) % 360.0 - 180.0
+    return dict(i=i, q=q, mag=abs(i) + abs(q), fresh=(w4 >> 16) & 1,
+                cordic=cordic, err=err, off=(w4 & 0xFFFF) * 360.0 / 65536)
+
+
+def report_lines(lines):
+    """Line 100's burst, one sample a frame: is the CORDIC right about it?"""
+    fresh = [l for l in lines if l["fresh"]]
+    print("line 100: %d frames, %d with a fresh angle" % (len(lines), len(fresh)))
+    if not fresh:
+        return
+    errs = sorted(abs(l["err"]) for l in fresh)
+    mags = sorted(l["mag"] for l in fresh)
+    print("  |i|+|q|      min %d median %d max %d" % (mags[0], mags[len(mags)//2], mags[-1]))
+    print("  cordic - atan2(q,i): median %.2f deg, 90%% %.2f, max %.2f"
+          % (errs[len(errs)//2], errs[int(len(errs)*0.9)], errs[-1]))
+    bad = [l for l in fresh if abs(l["err"]) > 5]
+    for l in bad[:6]:
+        print("  off by %.1f: i=%d q=%d cordic %.1f" % (l["err"], l["i"], l["q"], l["cordic"]))
 
 
 def main():
@@ -55,11 +86,16 @@ def main():
     paths = sorted(glob.glob(sys.argv[1]))
     got = []
     per_rot = {}
+    lines = []
     for p in paths:
         raw = frame(p)
         w2 = word(raw, (473, 474), 0x5)
         if w2 is not None:
             per_rot.setdefault((w2 >> 24) & 15, set()).add(((w2 >> 12) & 0xFFF, w2 & 0xFFF))
+        w3 = word(raw, (465, 466), None)
+        w4 = word(raw, (469, 470), None)
+        if w3 is not None and w4 is not None:
+            lines.append(line_fields(w3, w4))
         w = word(raw)
         if w is None:
             print("%s: no strip" % p)
@@ -76,6 +112,8 @@ def main():
     print("track   min %d median %d max %d (of 16384)"
           % (min(tracks), statistics.median(tracks), max(tracks)))
     print("frames  %d of %d carried the strip" % (len(got), len(paths)))
+    if lines:
+        report_lines(lines)
 
 
 if __name__ == "__main__":

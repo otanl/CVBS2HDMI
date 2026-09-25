@@ -21,10 +21,14 @@ W, ROWS = 640, 8          # crop: y = 472..479
 
 
 def record(path, seconds):
+    # A frame count, not a duration, and passthrough timing: when the card's
+    # timestamps jumped, "-t" with the default constant-rate output padded the
+    # gap with duplicates and wrote 48 GB before the disk filled.
     subprocess.check_call(
         ["ffmpeg", "-v", "error", "-y", "-f", "avfoundation", "-video_size", "640x480",
-         "-framerate", "60", "-pixel_format", "uyvy422", "-i", "0", "-t", str(seconds), "-vf", "crop=640:8:0:472",
-         "-f", "rawvideo", "-pix_fmt", "rgb24", path])
+         "-framerate", "60", "-pixel_format", "uyvy422", "-i", "0",
+         "-frames:v", str(int(seconds * 60)), "-fps_mode", "passthrough",
+         "-vf", "crop=640:8:0:472", "-f", "rawvideo", "-pix_fmt", "rgb24", path])
 
 
 def word(frame, rows):

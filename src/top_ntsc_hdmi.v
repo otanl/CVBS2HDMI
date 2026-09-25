@@ -114,6 +114,9 @@ module top_ntsc_hdmi #(
     wire [5:0] adc_sweeps;
     reg  [3:0] adc_dbg_rot = 4'd0;
     wire [15:0] adc_dbg_cx, adc_dbg_cy, adc_dbg_bx, adc_dbg_by;
+    wire [15:0] dbg_line_i, dbg_line_q;
+    wire [31:0] dbg_line_angle, dbg_line_off;
+    wire        dbg_line_fresh;
     reg  [23:0] diag_timer = 24'd0;
     reg  [3:0]  diag_rot = 4'd0;
     always @(posedge pixel_clk) begin
@@ -181,6 +184,8 @@ module top_ntsc_hdmi #(
         .adc_sweeps(adc_sweeps), .adc_pair_x(adc_pair_x), .adc_track(adc_track),
         .adc_dbg_rot(adc_dbg_rot), .adc_dbg_cx(adc_dbg_cx), .adc_dbg_cy(adc_dbg_cy),
         .adc_dbg_bit(adc_dbg_rot[2:0]), .adc_dbg_bx(adc_dbg_bx), .adc_dbg_by(adc_dbg_by),
+        .dbg_line_i(dbg_line_i), .dbg_line_q(dbg_line_q), .dbg_line_angle(dbg_line_angle),
+        .dbg_line_off(dbg_line_off), .dbg_line_fresh(dbg_line_fresh),
         .gain_sel(gain_sel),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_bank(wr_bank),
         .line_done(line_done), .vsync_pulse(vsync_pulse),
@@ -565,9 +570,15 @@ module top_ntsc_hdmi #(
     wire [31:0] adc_word2 = ADC_DIAG
         ? {3'b101, adc_dbg_rot[2:0], phase_used, adc_dbg_bx[14:4], adc_dbg_by[14:4]}
         : {4'h5, adc_dbg_rot, adc_dbg_cx[14:3], adc_dbg_cy[14:3]};
-    wire on_adc_word = ADC_STRIP && !TAPE && y_d >= 11'd472 && y_d < 11'd480 &&
+    // And above those, line 100's burst: i and q, then the CORDIC's angle
+    // (15 bits), whether it was fresh, and the tracked angle (16 bits).
+    wire [31:0] adc_word3 = {dbg_line_i, dbg_line_q};
+    wire [31:0] adc_word4 = {dbg_line_angle[31:17], dbg_line_fresh, dbg_line_off[31:16]};
+    wire on_adc_word = ADC_STRIP && !TAPE && y_d >= 11'd464 && y_d < 11'd480 &&
                        x < 11'd512;
-    wire [31:0] adc_show = (y_d >= 11'd476) ? adc_word : adc_word2;
+    wire [31:0] adc_show = (y_d >= 11'd476) ? adc_word
+                         : (y_d >= 11'd472) ? adc_word2
+                         : (y_d >= 11'd468) ? adc_word4 : adc_word3;
     wire [7:0] adc_rgb = adc_show[31 - x[8:4]] ? 8'hFF : 8'h00;
 
     wire [7:0] out_r = TAPE ? tape_grey : on_adc_word ? adc_rgb : scope_sync ? diagnostic_r : bg_r;

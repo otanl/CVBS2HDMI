@@ -141,24 +141,32 @@ module adc_front #(
         end
     endgenerate
 
-    reg differ_x, differ_y;
+    reg differ_x, differ_y, differ_xa, differ_ya;
     always @(posedge pclk) begin
-        differ_x <= ((sample & CAL_MASK) != (fall & CAL_MASK));   // sample, next witness
-        differ_y <= ((rise & CAL_MASK)   != (fall & CAL_MASK));   // witness, next sample
+        differ_x  <= ((sample & CAL_MASK) != (fall & CAL_MASK));   // sample, next witness
+        differ_y  <= ((rise & CAL_MASK)   != (fall & CAL_MASK));   // witness, next sample
+        differ_xa <= (sample != fall);                            // the same, every bit
+        differ_ya <= (rise != fall);
     end
 
     // ---- calibration -------------------------------------------------------
     localparam [2:0] S_SETTLE = 3'd0, S_COUNT = 3'd1, S_DECIDE = 3'd2,
-                     S_MOVE = 3'd3, S_TRACK = 3'd4;
+                     S_MOVE = 3'd3, S_TRACK = 3'd4, S_PICK = 3'd5;
     localparam [WIN_W:0] WIN = {1'b1, {WIN_W{1'b0}}};
     // Too few differences anywhere to locate the switching: no signal.
     localparam [WIN_W:0] MIN_PEAK = WIN >> 6;
 
     reg  [2:0]     st;
     reg  [WIN_W:0] n;                 // samples into this window
-    reg  [WIN_W:0] cnt_x, cnt_y;
+    reg  [WIN_W:0] cnt_x, cnt_y, cnt_xa, cnt_ya;
     reg  [WIN_W:0] cx [0:9];
     reg  [WIN_W:0] cy [0:9];
+    reg  [WIN_W:0] cxa [0:9];         // all eight bits, for the choice within a run
+    reg  [WIN_W:0] cya [0:9];
+    // Choosing within the quiet run.
+    reg            pk_x;
+    reg  [3:0]     pk_end, pk_len, pk_k, pk_best;
+    reg  [WIN_W:0] pk_min;
     reg  [WIN_W:0] peak;
     reg  [3:0]     sweep;             // rotation under test
     reg  [4:0]     scan;              // 1..20 walk twice round the circle
@@ -193,6 +201,15 @@ module adc_front #(
     wire [WIN_W:0] cnt_max   = (cnt_x > cnt_y) ? cnt_x : cnt_y;
     wire           track_differ = use_x ? differ_x : differ_y;
 
+    // The run member under consideration, walking down from its last.
+    wire [3:0]     pk_r     = (pk_end >= pk_k) ? pk_end - pk_k : pk_end + 4'd10 - pk_k;
+    wire [WIN_W:0] pk_val   = pk_x ? cxa[pk_r] : cya[pk_r];
+    // A run of three or more loses its ends: they sit next to a switching.
+    wire           pk_cand  = (pk_len < 4'd3) || (pk_k != 4'd0 && pk_k != pk_len - 4'd1);
+    // Walking down, a y-run reaches its low end last and an x-run its high
+    // end first; those are the ends away from the sample, so ties go to them.
+    wire           pk_takes = pk_cand && (pk_x ? (pk_val < pk_min) : (pk_val <= pk_min));
+
     integer i;
     always @(posedge pclk or negedge rst_n) begin
         if (!rst_n) begin
@@ -202,7 +219,12 @@ module adc_front #(
             run_y <= 4'd0; len_y <= 4'd0; end_y <= 4'd0;
             use_x <= 1'b0; keep <= 4'd0; sweeps <= 6'd0; track_count <= 0;
             rot <= 4'd0; cal_done <= 1'b0;   // a constant: async reset
-            for (i = 0; i < 10; i = i + 1) begin cx[i] <= 0; cy[i] <= 0; end
+            cnt_xa <= 0; cnt_ya <= 0;
+            pk_x <= 1'b0; pk_end <= 4'd0; pk_len <= 4'd0; pk_k <= 4'd0; pk_best <= 4'd0;
+            pk_min <= 0;
+            for (i = 0; i < 10; i = i + 1) begin
+                cx[i] <= 0; cy[i] <= 0; cxa[i] <= 0; cya[i] <= 0;
+            end
         end else if (!AUTO) begin
             rot <= manual_rot;
         end else begin
@@ -210,17 +232,22 @@ module adc_front #(
             S_SETTLE: begin
                 n <= n + 1'b1;
                 if (n == SETTLE - 1) begin
-                    n <= 0; cnt_x <= 0; cnt_y <= 0; st <= S_COUNT;
+                    n <= 0; cnt_x <= 0; cnt_y <= 0; cnt_xa <= 0; cnt_ya <= 0;
+                    st <= S_COUNT;
                 end
             end
             S_COUNT: begin
                 n <= n + 1'b1;
                 if (differ_x && !cnt_x[WIN_W]) cnt_x <= cnt_x + 1'b1;
                 if (differ_y && !cnt_y[WIN_W]) cnt_y <= cnt_y + 1'b1;
+                if (differ_xa && !cnt_xa[WIN_W]) cnt_xa <= cnt_xa + 1'b1;
+                if (differ_ya && !cnt_ya[WIN_W]) cnt_ya <= cnt_ya + 1'b1;
                 if (n == WIN - 1) begin
                     n <= 0;
-                    cx[sweep] <= cnt_x;
-                    cy[sweep] <= cnt_y;
+                    cx[sweep]  <= cnt_x;
+                    cy[sweep]  <= cnt_y;
+                    cxa[sweep] <= cnt_xa;
+                    cya[sweep] <= cnt_ya;
                     if (cnt_max > peak) peak <= cnt_max;
                     if (sweep == 4'd9) begin
                         st <= S_DECIDE; scan <= 5'd0;
@@ -259,13 +286,36 @@ module adc_front #(
             S_MOVE: begin
                 if (sweeps != 6'h3F) sweeps <= sweeps + 6'd1;
                 if (peak >= MIN_PEAK && (ok_x || ok_y)) begin
-                    rot      <= pick_x ? centre(end_x, len_x) : centre(end_y, len_y);
-                    keep     <= pick_x ? centre(end_x, len_x) : centre(end_y, len_y);
-                    use_x    <= pick_x;
-                    cal_done <= 1'b1;
-                end else
+                    // The run is quiet on the clean bits; within it, take the
+                    // rotation where all eight bits disagree least.  On this
+                    // board the bottom bank misreads far more at some rotations
+                    // inside the run than others -- 12..16% against 3 for bits
+                    // 4 and 5 -- and the run's centre can be the worst of them.
+                    pk_x    <= pick_x;
+                    pk_end  <= pick_x ? end_x : end_y;
+                    pk_len  <= pick_x ? len_x : len_y;
+                    pk_best <= pick_x ? centre(end_x, len_x) : centre(end_y, len_y);
+                    pk_k    <= 4'd0;
+                    pk_min  <= {(WIN_W+1){1'b1}};
+                    st      <= S_PICK;
+                end else begin
                     rot <= keep;          // no signal, or nothing quiet
-                n <= 0; cnt_x <= 0; st <= S_TRACK;
+                    n <= 0; cnt_x <= 0; st <= S_TRACK;
+                end
+            end
+            S_PICK: begin
+                if (pk_takes) begin
+                    pk_min  <= pk_val;
+                    pk_best <= pk_r;
+                end
+                pk_k <= pk_k + 4'd1;
+                if (pk_k == pk_len - 4'd1) begin
+                    rot      <= pk_takes ? pk_r : pk_best;
+                    keep     <= pk_takes ? pk_r : pk_best;
+                    use_x    <= pk_x;
+                    cal_done <= 1'b1;
+                    n <= 0; cnt_x <= 0; st <= S_TRACK;
+                end
             end
             S_TRACK: begin
                 n <= n + 1'b1;

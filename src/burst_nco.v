@@ -62,8 +62,13 @@ module burst_nco #(
     output reg  signed [15:0] burst_q,
     output reg         locked,
     output reg  [7:0]  good_lines,
-    output wire [31:0] phase_ref
+    output wire [31:0] phase_ref,
+    // Diagnostics: the CORDIC's last angle, and the tracked burst angle.
+    output wire [31:0] dbg_angle,
+    output wire [31:0] dbg_off,
+    output wire        dbg_angle_new
 );
+
     wire [31:0] phase_c = phase + 32'h4000_0000;
 
     localparam [7:0] DEG60  = 8'd43;
@@ -148,6 +153,22 @@ module burst_nco #(
     // filter's freq_adj and the note on vs_seen.
     wire signed [31:0] track_p_adj = track_err >>> TRACK_P;
     wire signed [31:0] track_i_adj = track_err >>> TRACK_I;
+    // A learned step a fraction of a turn out is a trap: the prediction then
+    // cycles round the measurement -- two values for half a turn, three for a
+    // third -- the corrections cancel over the cycle, and it stays there with
+    // the error near 80 degrees on most lines: a random-looking hue on every
+    // line.  Which acquisition falls into it is chance, so on the board the
+    // same bitstream decoded colour on one load and not the next, which read
+    // as a placement bug.  A tracker that is right misses by a few degrees, so
+    // keep a running mean of the miss (1/8 per line, 8-bit angle units) and
+    // relearn the step from the next two measurements when it passes 45
+    // degrees.  A mean, not a run of large misses: in the three-cycle one line
+    // in three lands close, and a run count never completes.  (Magnitude by
+    // the sign bit and unsigned compares: no signed comparison, apicula#541.)
+    wire        [31:0] track_err_abs = track_err[31] ? (32'd0 - track_err) : track_err;
+    reg         [10:0] miss_acc;     // mean miss x 8, in 1/256 turn
+    wire        [10:0] miss_next = miss_acc - {3'd0, miss_acc[10:3]} + {3'd0, track_err_abs[31:24]};
+    wire               trapped   = miss_next[10:3] > 8'd32;          // 45 deg
     reg [17:0] burst_age;
 
     wire [31:0] cordic_angle;
@@ -220,6 +241,7 @@ module burst_nco #(
             have_prev  <= 1'b0;
             burst_age  <= 18'd0;
             gap_resync <= 1'b0;
+            miss_acc   <= 11'd0;
             cordic_start <= 1'b0;
             locked     <= 1'b0;
             sum_r <= 20'sd0; mag_r <= 17'd0;
@@ -295,6 +317,12 @@ module burst_nco #(
                 end else if (BURST_TRACK && have_step) begin
                     burst_off  <= track_pred + track_p_adj;
                     burst_step <= burst_step + track_i_adj;
+                    miss_acc <= miss_next;
+                    if (trapped) begin
+                        miss_acc  <= 11'd0;
+                        burst_off <= track_meas;
+                        have_step <= 1'b0;   // have_prev stays: this is the first
+                    end
                 end else if (have_prev) begin
                     // The step is the difference between two consecutive
                     // angles, so it needs two of them.  Seeding it from one
@@ -381,6 +409,9 @@ module burst_nco #(
             end
         end
     end
+    assign dbg_angle     = sect_r;
+    assign dbg_off       = burst_off;
+    assign dbg_angle_new = cordic_done;
 endmodule
 
 `default_nettype wire

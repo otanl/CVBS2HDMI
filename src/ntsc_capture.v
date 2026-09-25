@@ -104,6 +104,15 @@ module ntsc_capture #(
     input  wire [2:0]  adc_dbg_bit,
     output wire [15:0] adc_dbg_bx,
     output wire [15:0] adc_dbg_by,
+    // One line a field, all from that line: the burst correlation, the
+    // CORDIC's angle for it, whether that angle is fresh, and the tracked
+    // burst angle.  Checking the angle against atan2 of its own inputs
+    // offline says which stage of the colour path computes wrongly.
+    output reg  [15:0] dbg_line_i,
+    output reg  [15:0] dbg_line_q,
+    output reg  [31:0] dbg_line_angle,
+    output reg  [31:0] dbg_line_off,
+    output reg         dbg_line_fresh,
     input  wire [1:0]  gain_sel,
 
     output reg         wr_en,
@@ -847,6 +856,8 @@ module ntsc_capture #(
             end
         end
     end
+    wire [31:0] nco_angle, nco_off;
+    wire        nco_angle_new;
     burst_nco #(.TRACK_GAP_SAMPLES(BURST_GAP_SAMPLES)) u_nco (
         .clk(clk), .rst_n(rst_n), .sample_en(sample_stb),
         .sample(adc_r), .blank_ref(black), .burst_gate(in_burst),
@@ -856,8 +867,26 @@ module ntsc_capture #(
         .gate_restart(line_edge),
         .phase(nco_phase), .inc(),
         .burst_i(burst_corr_i), .burst_q(burst_corr_q),
-        .locked(burst_locked), .good_lines(), .phase_ref(nco_ref)
+        .locked(burst_locked), .good_lines(), .phase_ref(nco_ref),
+        .dbg_angle(nco_angle), .dbg_off(nco_off), .dbg_angle_new(nco_angle_new)
     );
+    reg         angle_seen;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            angle_seen <= 1'b0; dbg_line_i <= 16'd0; dbg_line_q <= 16'd0;
+            dbg_line_angle <= 32'd0; dbg_line_off <= 32'd0; dbg_line_fresh <= 1'b0;
+        end else begin
+            if (line_edge)          angle_seen <= 1'b0;
+            else if (nco_angle_new) angle_seen <= 1'b1;
+            if (line_in_field == 9'd100 && cpos == 12'd400) begin
+                dbg_line_i     <= burst_corr_i;
+                dbg_line_q     <= burst_corr_q;
+                dbg_line_angle <= nco_angle;
+                dbg_line_off   <= nco_off;
+                dbg_line_fresh <= angle_seen;
+            end
+        end
+    end
 
 endmodule
 
