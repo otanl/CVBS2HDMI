@@ -14,7 +14,7 @@ module burst_products_tb;
     wire signed [15:0] burst_i, burst_q;
     reg gate_d = 0;
     integer cycle, centre, previous_centre = 0;
-    integer sum_i = 0, sum_q = 0, checks = 0, changed = 0;
+    integer sum_i = 0, sum_q = 0, checks = 0, changed = 0, check_in = 0;
     reg signed [15:0] expected_i, expected_q;
 
     burst_nco #(.SINE_REF(SINE_REF)) dut (
@@ -34,15 +34,24 @@ module burst_products_tb;
                 expected_i = sum_i >>> 6;
                 expected_q = sum_q >>> 6;
                 sum_i = 0; sum_q = 0;
-                #1;
-                if (burst_i !== expected_i || burst_q !== expected_q)
-                    $fatal(1, "burst product misalignment: got %0d,%0d expected %0d,%0d",
-                           burst_i, burst_q, expected_i, expected_q);
-                checks = checks + 1;
+                check_in = 4;
             end
             gate_d = gate;
         end
         previous_centre = centre;
+    end
+
+    // The correlation is published three clocks after the gate's fall is
+    // seen (burst_nco's pipeline flush); check it before the next strobe.
+    always @(posedge clk) if (check_in != 0) begin
+        check_in = check_in - 1;
+        if (check_in == 0) begin
+            #1;
+            if (burst_i !== expected_i || burst_q !== expected_q)
+                $fatal(1, "burst product misalignment: got %0d,%0d expected %0d,%0d",
+                       burst_i, burst_q, expected_i, expected_q);
+            checks = checks + 1;
+        end
     end
 
     initial begin

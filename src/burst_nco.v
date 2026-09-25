@@ -97,6 +97,15 @@ module burst_nco #(
                                 .cosine(lut_cosine), .sine(lut_sine));
     reg               gate_d;
     wire              gate_fall = gate_d && !burst_gate;
+    // The gate's fall is acted on three clocks after it is seen, whatever the
+    // sample rate.  The last gated sample's product takes two clocks to reach
+    // the accumulators and a third to reach sum_r/mag_r; with five clocks per
+    // sample that had always happened by the next strobe, and at one sample
+    // per clock it has not.  Acting on a clock count rather than on a strobe
+    // makes both correct.
+    reg  [2:0]        fall_d;
+    wire              proc = fall_d[2];
+    wire [31:0]       step_now = sample_en ? inc : 32'd0;
 
     wire signed [15:0] i_abs = i_scaled[15] ? -i_scaled : i_scaled;
     wire signed [15:0] q_abs = q_scaled[15] ? -q_scaled : q_scaled;
@@ -190,6 +199,7 @@ module burst_nco #(
             burst_i    <= 16'sd0;
             burst_q    <= 16'sd0;
             gate_d     <= 1'b0;
+            fall_d     <= 3'd0;
             good_lines <= 8'd0;
             err_sum    <= 20'sd0;
             avg_cnt    <= 8'd0;
@@ -214,8 +224,10 @@ module burst_nco #(
             // routed). There are five clocks per sample, so separate them.
             // Latch BOTH operands on the original strobe: continuously
             // registering centred alone would select a different ADC phase.
-            input_pending <= sample_en && burst_gate;
-            product_pending <= input_pending;
+            // A restart also drops whatever is still in the pipeline, and the
+            // sample taken with it: all of it was gated on the old timing.
+            input_pending <= sample_en && burst_gate && !gate_restart;
+            product_pending <= input_pending && !gate_restart;
             if (sample_en && burst_gate) begin
                 sample_centred <= centred;
                 sample_i_weight <= i_weight;
@@ -226,8 +238,6 @@ module burst_nco #(
                 q_product <= sample_centred * sample_q_weight;
             end
             if (gate_restart) begin
-                // Every product of an earlier sample has already landed: they
-                // take three clocks and samples are five apart.
                 i_acc <= 24'sd0;
                 q_acc <= 24'sd0;
             end else if (product_pending) begin
@@ -332,8 +342,10 @@ module burst_nco #(
             // 180 on a standard one -- and a gap is no evidence against it.
             // Only the absolute phase goes stale, so only that is re-measured.
             if (burst_age == TRACK_GAP_SAMPLES[17:0]) gap_resync <= 1'b1;
+            end
 
-            if (gate_fall) begin
+            fall_d <= {fall_d[1:0], sample_en && gate_fall};
+            if (proc) begin
                 burst_i <= i_scaled;
                 burst_q <= q_scaled;
                 i_acc   <= 16'sd0;
@@ -342,13 +354,13 @@ module burst_nco #(
                 if (mag_r >= MAG_MIN) begin
                     burst_age <= 18'd0;
                     cordic_start <= 1'b1;
-                    correlation_adjust <= SNAP_PER_LINE ? (SNAP_PHASE - phase - inc)
+                    correlation_adjust <= SNAP_PER_LINE ? (SNAP_PHASE - phase - step_now)
                         : ((avg_cnt == ((1 << AVG_LOG2) - 1)) ? phase_adj : 32'd0);
                     if (avg_cnt == ((1 << AVG_LOG2) - 1)) begin
                         avg_cnt <= 8'd0;
                         err_sum <= 20'sd0;
                         phase   <= SNAP_PER_LINE ? SNAP_PHASE
-                                                 : (phase + inc + phase_adj);
+                                                 : (phase + step_now + phase_adj);
                         inc_pend <= 1'b1;
                     end else begin
                         avg_cnt <= avg_cnt + 8'd1;
@@ -361,7 +373,6 @@ module burst_nco #(
                 end
 
                 locked <= (good_lines >= LOCK_LINES);
-            end
             end
         end
     end
