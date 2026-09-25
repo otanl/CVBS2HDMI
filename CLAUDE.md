@@ -1013,7 +1013,79 @@ measuring a signal, and it is the first tool to reach for next time.
 
 `sim/m5_tape_18lines.hex` is the recording of the M5 through the respun board.
 
+### Bits 0, 1, 4 and 5 were packed as LVDS receivers, and most of the M5's "quirks" were that (2026-09-25)
+
+**Not the circuit: Apicula.**  gowin_pack configures every input buffer with
+its *bank's* IO_TYPE, not its own, and forces a bank holding a true LVDS output
+to LVDS25 (`check_io_banks`, `process_IBUF`).  Bank 5 holds the HDMI clock lane
+(pins 33/34) and ADC bits 0, 1, 4 and 5 (pins 27..30), so those four LVCMOS33
+inputs were packed as LVDS receivers, each A/B pair -- 27/28 and 29/30 --
+compared against the other.  Bits 2, 3, 6 and 7 are in bank 1 and were never
+affected.  Everything measured through bits 0, 1, 4 and 5 before this date is
+suspect.
+
+Found with a raw-read recorder -- both IDDR outputs of all eight bits, every
+126 MHz clock for 16384 clocks, shown through the TAPE path and analysed
+offline (a scratch build; on-chip counters gave answers that could not be
+trusted):
+
+- bank-1 bits changed at exactly one read position of ten, with no isolated
+  glitch; bank-5 bits flipped at many positions, 1400 isolated glitches in
+  32768 reads;
+- the errors sat where a pair's two bits were *equal*: bit 0 = bit 1 = 0 gave
+  3.25 wrong reads of ten per conversion, unequal 0.07..0.27 -- a differential
+  receiver's signature;
+- not noise: with the ADC clock stopped the same pins read perfectly.  Not
+  carrier crosstalk: the old layout puts D4/D5 further from the clock trace
+  than the clean D7.  Not an IO setting: input hysteresis changed nothing, and
+  adc_clk at DRIVE=4 only cut it by a fifth.
+
+**Fix: `scripts/gowin_pack_io.py`**, which every Makefile pack step now uses.
+It packs single-ended IBUFs in a true-LVDS bank as their own IO_TYPE and
+leaves everything else to Apicula (the probe design packs byte-identically).
+The same routed design then records no glitch in 32768 reads, every bit
+changing at one position.  Worth reporting upstream.
+
+What the misreads had been doing, from a corrected recording
+(`sim/m5_tape_fixedio_18lines.hex`) and the floating-point reference:
+
+| bar | luma IRE | chroma IRE | hue | textbook |
+|---|---|---|---|---|
+| yellow | 59.9 | 24.3 | +166.0 | +167.1 |
+| cyan | 47.1 | 33.5 | -84.1 | -79.0 |
+| green | 40.6 | 33.9 | -121.9 | -119.3 |
+| magenta | 28.1 | 34.9 | +60.0 | +63.5 |
+| red | 21.1 | 36.4 | +100.8 | +103.5 |
+| blue | 8.7 | 26.0 | -13.6 | -12.9 |
+
+The M5 sends nearly textbook bars.  **Superseded, below:** bars out of luma
+order, pale yellow and cyan, the "101/166 square wave" burst, porches at
+117/101 and a black bar at 117/85 (16 and 32 codes: bits 4 and 5), the
+boot-dependent blanking, and the diagonal crawl.  Against the morning's
+recording, the products at 25.2 - 6 fsc and 8 fsc - 25.2 fall by 39 and 47 dB,
+to 0.0..0.1 codes.  **The LC filter is not needed.**  C13 at 680 pF now only
+costs chroma: about -2.5 dB at 3.58 MHz from the 57.5 ohm source, where the
+schematic's 100 pF costs 0.1.
+
+The decoder replays the corrected recording within 5 degrees of textbook hue,
+1.6..2.5 degrees line to line, luma in order on every line.  On the board it
+exposed two more things:
+
+- **The burst tracker's trap** (found on the `sample-clock` branch): with the
+  corrected signal it caught every load -- hue out by 70..90 degrees, stripes
+  line to line.  The escape -- a running mean of the tracking miss, relearning
+  the step above 45 degrees -- is now in master, judged a clock after the
+  update so 126 MHz still closes; `sim-tracking` knocks the step half and a
+  third of a turn out and requires recovery within 14 lines.
+- **Master's placement lottery is real.**  Seeds 3, 5 and 11 of one netlist,
+  each consistent across its loads: seed 5 hue +3/+0/-6/+7 degrees, 0.8..2.5
+  line to line, median row-to-row difference 1.2..2.3 (4.8 before); seed 11
+  about 32 degrees line to line; seed 3 wrong colour.  `NTSC_SEED` is 5.  The
+  `sample-clock` branch has no ALU cells and was measured not to depend on it.
+
 ### What the M5 actually transmits, measured at full rate
+
+**Superseded (2026-09-25):** measured through bits 0, 1, 4 and 5 while they were packed as LVDS receivers -- see *Bits 0, 1, 4 and 5 were packed as LVDS receivers* above.
 
 Several conclusions recorded above came from five usable bits or from reading
 the scope trace; these supersede them.
@@ -1039,6 +1111,8 @@ Two consequences:
 - **Pale yellow and cyan are the source**, not the decoder.
 
 ### The diagonal crawl is aliasing of the M5's DAC, and no decoder can remove it
+
+**Superseded (2026-09-25):** measured through bits 0, 1, 4 and 5 while they were packed as LVDS receivers -- see *Bits 0, 1, 4 and 5 were packed as LVDS receivers* above.
 
 What remains visible after every fix is a fine diagonal texture inside the
 coloured bars.  The floating-point reference shows the same thing, so it is in
@@ -1163,6 +1237,8 @@ placement dependence, and they cost nothing.
 
 ### The M5's blanking levels depend on its boot
 
+**Superseded (2026-09-25):** measured through bits 0, 1, 4 and 5 while they were packed as LVDS receivers -- see *Bits 0, 1, 4 and 5 were packed as LVDS receivers* above.
+
 A second recording, after the M5 had been power-cycled, showed different junk
 in its two DMA line buffers: front porch 99/115 alternating (it had been 117 on
 every line), back porch 114/99, black bar 101/117.  The front-porch black
@@ -1184,6 +1260,8 @@ different factor (0.13..1.67) and the burst's third harmonic by 22 dB, which no
 capacitor does.  A before/after of the filter needs one M5 boot on both sides.
 
 ### Removing the crawl digitally: only a five-line comb, and only on a still pattern
+
+**Superseded (2026-09-25):** measured through bits 0, 1, 4 and 5 while they were packed as LVDS receivers -- see *Bits 0, 1, 4 and 5 were packed as LVDS receivers* above.
 
 Both products are exact multiples of the M5's line (6 fsc and 8 fsc are 1365
 and 1820 cycles a line) while chroma alternates, so a comb along the lines
@@ -1207,6 +1285,8 @@ built.
 
 ### An LC anti-alias filter on R3's pads (*Planned*, parts arriving)
 
+**Superseded (2026-09-25):** measured through bits 0, 1, 4 and 5 while they were packed as LVDS receivers -- see *Bits 0, 1, 4 and 5 were packed as LVDS receivers* above.
+
 Remove R3 (20 ohm, 0603) and bridge its pads with **1 uH in series with
 47 ohm** (39..56 is fine), leaded parts, short leads; C13 stays 680 pF.  With
 the 75-ohm source, the design calculation gives, across the parts' tolerance:
@@ -1214,12 +1294,10 @@ colour band -3.4..+0.6 dB, 21.5 MHz at least 19.9 dB down, 28.6 MHz at least
 24.9 dB down, peaking no more than +0.7 dB.
 
 Measuring it needs one M5 boot on both sides, so **keep the M5 powered through
-the rework** and unplug only the Tang.  `sim/m5_tape_base3_18lines.hex` is the
-before recording, taken on the boot that is running now (2026-09-25) with
-`build/master_tape.fs` -- use that same bitstream for the after recording.
-After: load it, capture 12 frames with `scripts/live_capture.sh`,
+the rework** and unplug only the Tang.  Record the before and after with one
+tape bitstream (`make ntsc-tape`).  After: load it, capture 12 frames with `scripts/live_capture.sh`,
 `scripts/tape_decode.py`, `scripts/tape_trim.py ... 18`, then
-`python3 scripts/filter_check.py sim/m5_tape_base3_18lines.hex AFTER.hex`,
+`python3 scripts/filter_check.py BEFORE.hex AFTER.hex`,
 which fits burst and bars at the subcarrier and at both alias frequencies and
 prints the chroma gain the decoder must make up.  If the M5 reboots, record a
 new baseline first -- a comparison across a reboot measures the reboot.

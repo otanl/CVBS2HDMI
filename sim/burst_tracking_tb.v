@@ -4,6 +4,14 @@
 // A rotating burst like the M5, including a full vertical blanking interval.
 // Check the first returning line, not just colour after a long settling time.
 module burst_tracking_tb;
+    // TRAP: knock the learned step TRAP_ADD out at line 100, as a bad
+    // acquisition can leave it (both half and a third of a turn seen on the
+    // board).  The prediction then alternates about the
+    // measurement for ever unless the tracker notices; it must be back
+    // within 12 degrees in TRAP_LINES lines.
+    parameter         TRAP = 1'b0;
+    parameter integer TRAP_LINES = 14;
+    parameter [31:0]  TRAP_ADD = 32'h8000_0000;   // half a turn; 32'h5555_5555 a third
     reg clk = 0;
     always #4 clk = ~clk;
     reg rst_n = 0, sample_en = 0, gate = 0;
@@ -38,7 +46,10 @@ module burst_tracking_tb;
                 sample = gate ? $rtoi(100.0+20.0*$cos(angle)+0.5) : 100;
                 if (ln >= 64 && ln < 88 && !locked)
                     $fatal(1, "valid vertical blanking lost colour lock");
-                if (pos == 300 && ln >= 32 && !(ln >= 64 && ln < 88)) begin
+                if (TRAP && ln == 100 && pos == 0)
+                    dut.burst_step = dut.burst_step + TRAP_ADD;
+                if (pos == 300 && ln >= 32 && !(ln >= 64 && ln < 88) &&
+                    !(TRAP && ln >= 100 && ln < 100 + TRAP_LINES)) begin
                     got = phase_ref * 2.0*PI/4294967296.0;
                     error = $atan2($sin(got-angle), $cos(got-angle))*180.0/PI;
                     if (error < 0) error = -error;

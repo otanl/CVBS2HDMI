@@ -13,6 +13,11 @@ FREQ_MHZ  := 108
 BUILD_DIR   := build
 BUILD_STAMP := $(BUILD_DIR)/.dir
 TOOL        := ./scripts/tool
+# gowin_pack, with single-ended inputs in a true-LVDS bank packed as their own
+# IO_TYPE.  Plain gowin_pack gives them the bank's LVDS25, which turned ADC bits
+# 0, 1, 4 and 5 (bank 5, beside the HDMI clock lane) into LVDS receivers; see
+# scripts/gowin_pack_io.py and CLAUDE.md.  A no-op for any other design.
+GOWIN_PACK  := $(TOOL) python3 scripts/gowin_pack_io.py
 
 # --- Step 1: AD9280 capture bring-up ---------------------------------------
 PROBE_TOP         := adc_probe_top
@@ -65,8 +70,8 @@ $(PROBE_PNR): $(PROBE_NETLIST) $(PROBE_CONSTRAINTS)
 		--vopt family=$(FAMILY) \
 		--vopt cst=$(PROBE_CONSTRAINTS)
 
-$(PROBE_BITSTREAM): $(PROBE_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(PROBE_BITSTREAM): $(PROBE_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 # Diagnostic variant: identical RTL, but the ADC inputs get weak pull-ups.
 # If the report then shows tog=00 min=255 max=255, the AD9280 is not driving
@@ -88,8 +93,8 @@ $(PULLDOWN_PNR): $(PROBE_NETLIST) $(PULLDOWN_CST)
 	$(TOOL) nextpnr-himbaechel --json $(PROBE_NETLIST) --write $@ --device $(DEVICE) \
 		--freq $(FREQ_MHZ) --vopt family=$(FAMILY) --vopt cst=$(PULLDOWN_CST)
 
-$(PULLDOWN_BITSTREAM): $(PULLDOWN_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(PULLDOWN_BITSTREAM): $(PULLDOWN_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 pulldown-program: $(PULLDOWN_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -112,8 +117,8 @@ $(PULLUP_PNR): $(PROBE_NETLIST) $(PULLUP_CST)
 		--vopt family=$(FAMILY) \
 		--vopt cst=$(PULLUP_CST)
 
-$(PULLUP_BITSTREAM): $(PULLUP_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(PULLUP_BITSTREAM): $(PULLUP_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 pullup-program: $(PULLUP_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -129,8 +134,8 @@ $(BUILD_DIR)/$(PROBE_TOP)_$(1)_pnr.json: $(BUILD_DIR)/$(PROBE_TOP)_$(1).json $(P
 	$(TOOL) nextpnr-himbaechel --json $$< --write $$@ --device $(DEVICE) \
 		--freq $(FREQ_MHZ) --vopt family=$(FAMILY) --vopt cst=$(PROBE_CONSTRAINTS)
 
-$(BUILD_DIR)/$(PROBE_TOP)_$(1).fs: $(BUILD_DIR)/$(PROBE_TOP)_$(1)_pnr.json
-	$(TOOL) gowin_pack -d $(FAMILY) -o $$@ $$<
+$(BUILD_DIR)/$(PROBE_TOP)_$(1).fs: $(BUILD_DIR)/$(PROBE_TOP)_$(1)_pnr.json scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $$@ $$<
 
 $(1): $(BUILD_DIR)/$(PROBE_TOP)_$(1).fs
 $(1)-program: $(BUILD_DIR)/$(PROBE_TOP)_$(1).fs
@@ -247,8 +252,8 @@ $(HDMI_PNR): $(HDMI_NETLIST) $(HDMI_CONSTRAINTS)
 	$(TOOL) nextpnr-himbaechel --json $(HDMI_NETLIST) --write $@ --device $(DEVICE) \
 		--freq 27 --vopt family=$(FAMILY) --vopt cst=$(HDMI_CONSTRAINTS)
 
-$(HDMI_BITSTREAM): $(HDMI_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(HDMI_BITSTREAM): $(HDMI_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 hdmitest-program: $(HDMI_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -268,8 +273,8 @@ $(HDMI720_PNR): $(HDMI720_NETLIST) $(HDMI_CONSTRAINTS)
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
 		--freq 75 --vopt family=$(FAMILY) --vopt cst=$(HDMI_CONSTRAINTS)
 
-$(HDMI720_BITSTREAM): $(HDMI720_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(HDMI720_BITSTREAM): $(HDMI720_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 hdmi720-program: $(HDMI720_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -289,8 +294,8 @@ $(HDMI640_PNR): $(HDMI640_NETLIST) $(HDMI_CONSTRAINTS)
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
 		--freq 27 --vopt family=$(FAMILY) --vopt cst=$(HDMI_CONSTRAINTS)
 
-$(HDMI640_BITSTREAM): $(HDMI640_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(HDMI640_BITSTREAM): $(HDMI640_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 hdmi640-program: $(HDMI640_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -325,19 +330,21 @@ $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-# Seed 11, chosen by measurement on the board and re-measured after the ADC
-# moved into IO registers: hue within 12 deg of the replay and 5..6 deg of
-# line-to-line wobble, where seed 3 gave 50 deg and 24 -- Apicula's ALU bug
-# (CLAUDE.md), so a seed is part of the build.  151.7 MHz.  Re-measure after
-# any RTL change.
-NTSC_SEED ?= 11
+# Seed 5, chosen by measurement on the board after the bank-5 inputs were
+# packed correctly and the tracker's trap was fixed: three loads each of seeds
+# 3, 5 and 11 of one netlist, every seed consistent across its loads -- seed 5
+# hue +3/+0/-6/+7 deg and 0.8..2.5 deg line to line, seed 11 about 32 deg line
+# to line, seed 3 wrong colour.  Apicula's ALU bug (CLAUDE.md), so a seed is
+# part of the build.  160.8 MHz.  Re-measure after any RTL change, over more
+# than one load.
+NTSC_SEED ?= 5
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
 		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
 
-$(NTSC_BITSTREAM): $(NTSC_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(NTSC_BITSTREAM): $(NTSC_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 ntsc-program: $(NTSC_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -377,8 +384,8 @@ $(NTSC_LEGACY_PNR): $(NTSC_LEGACY_NETLIST) $(NTSC_CST) constraints/tangnano20k_n
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
 		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
 
-$(NTSC_LEGACY_BITSTREAM): $(NTSC_LEGACY_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(NTSC_LEGACY_BITSTREAM): $(NTSC_LEGACY_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 ntsc-legacy-program: $(NTSC_LEGACY_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -403,8 +410,8 @@ $(NTSC_SCOPE_PNR): $(NTSC_SCOPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_nts
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
 		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
 
-$(NTSC_SCOPE_BITSTREAM): $(NTSC_SCOPE_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(NTSC_SCOPE_BITSTREAM): $(NTSC_SCOPE_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 ntsc-scope-program: $(NTSC_SCOPE_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -426,8 +433,8 @@ $(NTSC_TAPE_PNR): $(NTSC_TAPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
 		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
 
-$(NTSC_TAPE_BITSTREAM): $(NTSC_TAPE_PNR)
-	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+$(NTSC_TAPE_BITSTREAM): $(NTSC_TAPE_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 ntsc-tape-program: $(NTSC_TAPE_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
@@ -483,10 +490,18 @@ test-quality:
 	python3 scripts/test_live_capture.py
 	python3 scripts/test_scope_pull_variant.py
 
+# TRAP=1 knocks the learned step half a turn, or a third, out mid-run -- the
+# states some acquisitions on the board fell into; the tracker must be back
+# within 14 lines.
 sim-tracking: | $(BUILD_STAMP)
-	$(TOOL) iverilog -g2012 -s burst_tracking_tb -o $(BUILD_DIR)/burst_tracking_tb \
-		src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/burst_tracking_tb.v
-	$(TOOL) vvp $(BUILD_DIR)/burst_tracking_tb
+	@for trap in "0 32'h80000000" "1 32'h80000000" "1 32'h55555555" "1 32'hAAAAAAAB"; do \
+		set -- $$trap; \
+		$(TOOL) iverilog -g2012 -s burst_tracking_tb -Pburst_tracking_tb.TRAP=$$1 \
+			-Pburst_tracking_tb.TRAP_ADD=$$2 \
+			-o $(BUILD_DIR)/burst_tracking_tb \
+			src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/burst_tracking_tb.v || exit $$?; \
+		$(TOOL) vvp $(BUILD_DIR)/burst_tracking_tb || exit $$?; \
+	done
 
 sim-reference: | $(BUILD_STAMP)
 	@for args in "0 0" "0 -100" "1 100"; do \
