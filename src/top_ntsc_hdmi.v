@@ -525,12 +525,7 @@ module top_ntsc_hdmi #(
                          : (y_d < TAPE_ROW0) ? x_d[5:2]
                          : (y_d < 11'd426) ? (x_d[2] ? dmp_rdata[3:0] : dmp_rdata[7:4])
                          : 4'd0;
-    // 16 + 14 * nibble, 16..226: inside video's limited range, so a capture
-    // card that expands 16..235 to 0..255 still gives sixteen distinct levels.
-    // Plain nibble * 17 collapsed 0 with 1 and 14 with 15 when the card
-    // switched to doing that after a replug.
-    wire [7:0]  tape_grey = 8'd16 + {1'b0, tape_nib, 3'b000} + {2'b00, tape_nib, 2'b00}
-                          + {3'b000, tape_nib, 1'b0};
+    wire [7:0]  tape_grey;   // 16 + 14 * nibble; see g_tape_grey at the end
 
     wire [7:0] out_r = TAPE ? tape_grey : scope_sync ? diagnostic_r : bg_r;
     wire [7:0] out_g = TAPE ? tape_grey : scope_sync ? diagnostic_g : bg_g;
@@ -543,6 +538,26 @@ module top_ntsc_hdmi #(
         .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n),
         .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n)
     );
+
+    // 16 + 14 * nibble, 16..226: inside video's limited range, so a capture
+    // card that expands 16..235 to 0..255 still gives sixteen distinct levels.
+    // Plain nibble * 17 collapsed 0 with 1 and 14 with 15 when the card
+    // switched to doing that after a replug.
+    //
+    // At the end of the file, and elaborated only for the tape, on purpose:
+    // Yosys names cells after their source line, so an edit that moves lines
+    // renames every cell below it, which moves the placement -- and with
+    // Apicula's ALU bug a placement is part of whether the decoder computes
+    // correctly.  Kept here, the normal build's netlist is unchanged and
+    // `make ntsc` still reproduces the measured seed-11 bitstream byte for byte.
+    generate
+        if (TAPE) begin : g_tape_grey
+            assign tape_grey = 8'd16 + {1'b0, tape_nib, 3'b000}
+                             + {2'b00, tape_nib, 2'b00} + {3'b000, tape_nib, 1'b0};
+        end else begin : g_tape_unused
+            assign tape_grey = {tape_nib, tape_nib};
+        end
+    endgenerate
 
 endmodule
 
