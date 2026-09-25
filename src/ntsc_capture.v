@@ -30,7 +30,14 @@ module ntsc_capture #(
     parameter integer ACTIVE_PIXELS = 640,
     parameter         SYNC_ON_SLOPE = 1'b0,
     parameter integer LUMA_SHIFT    = 4,
-    parameter integer THR_SHIFT     = 5,
+    // The slice sits span >> THR_SHIFT above the floor.  With a real sync step
+    // 5 is too close: on the M5 recording the low-passed sync tip wanders over
+    // 82..85 and a slice at 85 broke half the sync pulses into fragments, so
+    // 112 lines of 249 were coasted by the flywheel and every window on them
+    // landed in the wrong place.  4 puts it about 5 codes up, where all 18
+    // syncs of the recording qualify as one clean run.  The legacy path is
+    // for a source with no sync step and keeps the slice at the floor.
+    parameter integer THR_SHIFT     = LEGACY_TIMING ? 5 : 4,
     parameter integer QUALIFY       = LEGACY_TIMING ? 124 : 80,
     parameter integer VS_MIN        = 400,
     parameter integer RELEASE       = 10,
@@ -39,6 +46,9 @@ module ntsc_capture #(
     parameter integer THR_SHIFT_LO  = 5,
     parameter integer ACC_WIN       = LEGACY_TIMING ? 800 : 128,
     parameter         SCOPE_LIVE    = 1'b1,
+    // Dump depth, as an address width.  11 is the one-line scope; 15 records
+    // 32768 consecutive samples -- twenty lines -- for replay in simulation.
+    parameter integer DUMP_AW       = 11,
     // Fill the scope dump with a known constant instead of the ADC, so the
     // whole read-back path -- BSRAM, trace drawing, HDMI, capture card and
     // scripts/scope_trace.py -- can be checked against an answer known in
@@ -59,6 +69,10 @@ module ntsc_capture #(
     // saturated on the same signal, and leaves the 130-code case exactly as it
     // was -- which is what keeps sim-video's published RGB values valid.
     parameter integer AUTO_GAIN = 1,
+    // Choose the sampling instant by measurement; see the calibration below.
+    // 0 keeps phase_sel, which is what the ADC probe and the benches that
+    // predate this used.
+    parameter         AUTO_PHASE   = 1'b1,
     parameter         COLOUR       = 1'b1
 ) (
     input  wire        clk_cap,        // TMDS serial clock, 126 MHz
@@ -70,6 +84,7 @@ module ntsc_capture #(
     output wire        adc_clamp,
 
     input  wire [2:0]  phase_sel,
+    output wire [2:0]  phase_in_use,  // in phase_sel's numbering
     input  wire [1:0]  gain_sel,
 
     output reg         wr_en,
@@ -96,7 +111,7 @@ module ntsc_capture #(
     output reg  [15:0] run_min,
     output reg  [15:0] run_max,
     output reg         dmp_we,
-    output reg  [10:0] dmp_addr,
+    output reg  [DUMP_AW-1:0] dmp_addr,
     output reg  [7:0]  dmp_data,
     output reg         dmp_rdy,
     input  wire        dmp_ack,
@@ -112,7 +127,11 @@ module ntsc_capture #(
     reg       otr_r;
     reg       adc_clk_r;
 
-    wire [2:0] cap_index = (phase_sel == 3'd0) ? 3'd4 : (phase_sel - 3'd1);
+    wire [2:0] sel_index = (phase_sel == 3'd0) ? 3'd4 : (phase_sel - 3'd1);
+    reg  [2:0] auto_cap;
+    reg        auto_valid;
+    wire [2:0] cap_index = (AUTO_PHASE && auto_valid) ? auto_cap : sel_index;
+    assign phase_in_use = (cap_index == 3'd4) ? 3'd0 : cap_index + 3'd1;
 
     always @(posedge clk_cap or negedge rst_n) begin
         if (!rst_n) begin
@@ -123,18 +142,129 @@ module ntsc_capture #(
             phase_r   <= phase;
             adc_r     <= adc_d;
             otr_r     <= adc_otr;
-            // Do not put a mux here.  A parameterised 60%-duty option was
-            // tried, folded away at its default, and still cost the picture
-            // half its rows -- the ADC clock leaves the die through this
-            // register, so anything added to the path moves the sampling
-            // instant relative to the converter's own output.  60% measured
-            // worse anyway: 21 distinct codes against 40%'s 27.
+            // The ADC clock leaves the die through this register.  A 60%-duty
+            // option once "cost the picture half its rows"; with the read
+            // phase fixed, any change to the design moved the read instant
+            // relative to the converter's output, and that was the cost.  The
+            // read phase is now calibrated (AUTO_PHASE below), but keep this
+            // path a bare register all the same.
             adc_clk_r <= (phase == 3'd4) || (phase == 3'd0);
         end
     end
 
     assign adc_clk = adc_clk_r;
     wire sample_stb = (phase_r == cap_index);
+
+    // Sampling-instant calibration.
+    //
+    // adc_d is read every 126 MHz clock, five times per conversion, and one of
+    // those five is used.  Which one is safe depends on the round trip -- the
+    // clock out through the fabric and the pins, the AD9280's output delay,
+    // the data back in -- and that changes with every placement.  A fixed
+    // choice therefore works in one build and not the next, and when it lands
+    // inside the converter's output switching window it fails in the worst
+    // way to diagnose: flat areas still decode, because consecutive samples
+    // agree in their upper bits and the luma filter averages the rest, while
+    // the burst, which swings 65 codes every sample, is corrupted on every
+    // line.  The picture keeps its brightness and loses its colour.
+    //
+    // So measure it.  Count, per phase, how often the data read differs from
+    // the previous clock's: a change first seen at phase s means the output
+    // switched just before that read.  Reading at s is then risky in
+    // proportion to the changes seen at s and at s+1, and the quietest point
+    // minimises n[s-1] + 2 n[s] + 2 n[s+1] + n[s+2].  Re-evaluated every 4 ms,
+    // and only moved when the current choice is measurably worse, so it does
+    // not wander between two equally good phases.
+    reg  [7:0]  adc_prev;
+    reg         adc_changed;
+    reg  [2:0]  chg_phase;
+    reg  [15:0] chg_cnt  [0:4];
+    reg  [15:0] chg_snap [0:4];
+    reg  [16:0] cal_pair [0:4];   // n[k] + n[k+1]
+    reg  [18:0] cal_sc   [0:4];   // pair[s-1] + pair[s] + pair[s+1]
+    reg  [18:0] cal_win;
+    reg  [3:0]  cal_step;         // 0 idle, 1 pairs, 2 scores, 3..7 search, 8..10 decide
+    reg  [18:0] best_score, cur_score, chg_total, cal_thresh, cand;
+    reg  [2:0]  best_s, cand_s;
+    reg         cand_v;
+    integer     ci;
+    // Spread over clocks -- it runs every 4 ms -- with fixed indices wherever
+    // possible; done in one clock it was the slowest path in the design.
+    wire [2:0]  cal_s   = cal_step[2:0] - 3'd3;
+    wire [18:0] cal_cur = cal_sc[cal_s];
+    always @(posedge clk_cap or negedge rst_n) begin
+        if (!rst_n) begin
+            adc_prev <= 8'd0; adc_changed <= 1'b0; chg_phase <= 3'd0;
+            cal_win <= 19'd0; cal_step <= 4'd0;
+            best_score <= 19'h7FFFF; cur_score <= 19'd0; best_s <= 3'd0;
+            cal_thresh <= 19'd0; cand <= 19'd0; cand_s <= 3'd0; cand_v <= 1'b0;
+            chg_total <= 19'd0; auto_cap <= 3'd0; auto_valid <= 1'b0;
+            for (ci = 0; ci < 5; ci = ci + 1) begin
+                chg_cnt[ci] <= 16'd0; chg_snap[ci] <= 16'd0;
+                cal_pair[ci] <= 17'd0; cal_sc[ci] <= 19'd0;
+            end
+        end else begin
+            adc_prev    <= adc_r;
+            adc_changed <= (adc_r != adc_prev);
+            chg_phase   <= phase_r;
+            cal_win     <= cal_win + 19'd1;
+            if (&cal_win) begin
+                for (ci = 0; ci < 5; ci = ci + 1) begin
+                    chg_snap[ci] <= chg_cnt[ci];
+                    chg_cnt[ci]  <= 16'd0;
+                end
+                cal_step <= 4'd1;
+            end else if (adc_changed && chg_cnt[chg_phase] != 16'hFFFF) begin
+                chg_cnt[chg_phase] <= chg_cnt[chg_phase] + 16'd1;
+            end
+            // A candidate is fetched one clock and compared the next, so no
+            // clock carries both a 5-way mux and a 19-bit compare.
+            cand_v <= 1'b0;
+            if (cand_v) begin
+                if (cand < best_score) begin
+                    best_score <= cand;
+                    best_s     <= cand_s;
+                end
+                if (cand_s == cap_index) cur_score <= cand;
+            end
+            case (cal_step)
+            4'd0: ;
+            4'd1: begin
+                for (ci = 0; ci < 5; ci = ci + 1)
+                    cal_pair[ci] <= {1'b0, chg_snap[ci]} + {1'b0, chg_snap[(ci+1)%5]};
+                cal_step <= 4'd2;
+            end
+            4'd2: begin
+                for (ci = 0; ci < 5; ci = ci + 1)
+                    cal_sc[ci] <= {2'd0, cal_pair[(ci+4)%5]} + {2'd0, cal_pair[ci]}
+                                + {2'd0, cal_pair[(ci+1)%5]};
+                chg_total  <= {2'd0, cal_pair[0]} + {2'd0, cal_pair[2]} + {3'd0, chg_snap[4]};
+                best_score <= 19'h7FFFF;
+                cal_step   <= 4'd3;
+            end
+            4'd8: cal_step <= 4'd9;     // the last candidate is compared now
+            4'd9: begin
+                cal_thresh <= best_score + (chg_total >> 4);
+                cal_step   <= 4'd10;
+            end
+            4'd10: begin
+                cal_step <= 4'd0;
+                // Act only with enough transitions to mean something, and move
+                // only when the current phase is worse by a sixteenth of them.
+                if (chg_total >= 19'd256 && (!auto_valid || cur_score > cal_thresh)) begin
+                    auto_cap   <= best_s;
+                    auto_valid <= 1'b1;
+                end
+            end
+            default: begin              // 3..7: fetch candidate s = cal_step - 3
+                cand     <= cal_cur;
+                cand_s   <= cal_s;
+                cand_v   <= 1'b1;
+                cal_step <= cal_step + 4'd1;
+            end
+            endcase
+        end
+    end
 
     localparam integer CLAMP_START = 13  + LPF_DELAY;   // ~0.5 us after sync
     localparam integer CLAMP_STOP  = 101 + LPF_DELAY;   // ~4.0 us, inside the tip
@@ -172,6 +302,7 @@ module ntsc_capture #(
     reg         lo_fall_seen;
     reg  [4:0]  hi_run;   // samples above threshold within a tolerated glitch
     reg  [11:0] ccnt;
+    reg  [11:0] ccnt_real;   // ccnt as the last real edge set it
 
     wire [7:0] adc_lp;
     sync_lpf u_lpf (.clk(clk_cap), .rst_n(rst_n), .en(sample_stb),
@@ -248,6 +379,7 @@ module ntsc_capture #(
     // capture clock from 141 MHz to 100.  A negative period_error is simply a
     // large unsigned one, so the sign bit picks which constant to test.
     localparam [24:0] PE_NEG_LIMIT = 25'd0 - (P_BAND * 256);
+    localparam [23:0] PE_POS_LIMIT = P_BAND * 256;
     reg in_late_window;
     // These counters change only once per five clocks. Precompute the
     // window comparisons and the fractional IIR in the intervening clocks,
@@ -271,9 +403,12 @@ module ntsc_capture #(
             // to exactly what it did before this existed.
             in_late_window <= !LEGACY_TIMING && (pcnt < P_WIN_NAR[15:0]);
             force_line <= pcnt >= free_period;
+            // Both halves unsigned.  The positive one used to compare against
+            // the integer P_BAND * 256, which is signed, so the comparison
+            // was still a signed one and still exposed to apicula#541.
             period_plausible <= period_error[24]
                              ? (period_error >= PE_NEG_LIMIT)
-                             : (period_error <= (P_BAND * 256));
+                             : (period_error[23:0] <= PE_POS_LIMIT);
         end
     end
     reg        locked_st;
@@ -302,6 +437,41 @@ module ntsc_capture #(
     assign slice_min   = f_min;
     assign slice_max   = f_max;
     assign slice_thr   = thr;
+
+    // Front-porch black reference (standard timing).
+    //
+    // The back porch is not blanking on every source.  The M5 generator leaves
+    // it at 101 on alternate lines where blanking is 117 -- its two DMA line
+    // buffers carry different breezeway and back-porch levels -- and a per-line
+    // clamp on it moved the black reference 16 codes every other line, which
+    // the luma gain turned into 45-code horizontal banding.  In the same
+    // recording the front porch reads 117 on every line, and it is blanking by
+    // definition on any NTSC source.
+    //
+    // A 16-sample running sum of the raw samples, delayed so that when the
+    // low-passed slicer first drops below threshold -- the leading edge as the
+    // slicer sees it, a dozen samples after the true one -- the window sits on
+    // the front porch, clear of both the end of the picture and the edge's own
+    // fall.  It is committed to black only when that low run then qualifies as
+    // a line sync, so equalising pulses, broad pulses and dips in the picture
+    // never reach it.
+    localparam integer FP_LAG = 18;   // age of the newest sample in the window
+    localparam integer FP_N   = 16;
+    reg  [7:0]  fp_dl [0:FP_LAG+FP_N-1];
+    reg  [11:0] fp_sum;
+    reg  [7:0]  fp_cand;
+    integer     fj;
+    always @(posedge clk_cap or negedge rst_n) begin
+        if (!rst_n) begin
+            fp_sum <= 12'd0; fp_cand <= 8'd134;
+            for (fj = 0; fj < FP_LAG+FP_N; fj = fj + 1) fp_dl[fj] <= 8'd0;
+        end else if (sample_stb) begin
+            fp_dl[0] <= adc_r;
+            for (fj = 1; fj < FP_LAG+FP_N; fj = fj + 1) fp_dl[fj] <= fp_dl[fj-1];
+            fp_sum <= fp_sum + {4'd0, fp_dl[FP_LAG-1]} - {4'd0, fp_dl[FP_LAG+FP_N-1]};
+            if (level_fall) fp_cand <= fp_sum[11:4];
+        end
+    end
 
     reg [12:0] bp_acc;
     reg [7:0]  s_even;
@@ -442,9 +612,11 @@ module ntsc_capture #(
     wire signed [23:0] g_raw = y_ext - (u101_r >>> 8) - (v149_r >>> 8);
     wire signed [23:0] b_raw = y_ext + (u130_r >>> 6);
 
-    wire [7:0] r_clip = r_raw[23] ? 8'd0 : (r_raw > 24'sd255 ? 8'd255 : r_raw[7:0]);
-    wire [7:0] g_clip = g_raw[23] ? 8'd0 : (g_raw > 24'sd255 ? 8'd255 : g_raw[7:0]);
-    wire [7:0] b_clip = b_raw[23] ? 8'd0 : (b_raw > 24'sd255 ? 8'd255 : b_raw[7:0]);
+    wire [7:0] r_clip = r_raw[23] ? 8'd0 : (|r_raw[22:8] ? 8'd255 : r_raw[7:0]);
+    wire [7:0] g_clip = g_raw[23] ? 8'd0 : (|g_raw[22:8] ? 8'd255 : g_raw[7:0]);
+    wire [7:0] b_clip = b_raw[23] ? 8'd0 : (|b_raw[22:8] ? 8'd255 : b_raw[7:0]);
+    // Clip by bits, not by a signed compare against 255 (apicula#541): once the
+    // sign bit is clear, anything above bit 7 means more than 255.
     wire [23:0] rgb = (COLOUR && burst_locked) ? {r_clip, g_clip, b_clip}
                                               : {luma_matrix, luma_matrix, luma_matrix};
 
@@ -467,8 +639,9 @@ module ntsc_capture #(
             lo_fall_pcnt <= 16'd0; lo_fall_seen <= 1'b0;
             hi_run <= 5'd0;
             lock_cnt <= 8'd0; ccnt <= 12'd0; period_out <= 16'd0; lag <= 12'd0;
+            ccnt_real <= 12'd124;
             real_count <= 16'd0; force_count <= 16'd0; qual_count <= 16'd0;
-            dmp_we <= 1'b0; dmp_addr <= 11'd0; dmp_data <= 8'd0;
+            dmp_we <= 1'b0; dmp_addr <= {DUMP_AW{1'b0}}; dmp_data <= 8'd0;
             dmp_rdy <= 1'b0; dmp_cap <= 1'b0; dmp_arm <= 23'd0;
             period_avg <= P_NOM[15:0]; rcnt <= 16'd0; force_run <= 8'd0;
             line_in_field <= 9'd0; be_armed <= 1'b0;
@@ -500,7 +673,7 @@ module ntsc_capture #(
             if (sample_stb) begin
                 if (dmp_cap) begin
                     dmp_we   <= 1'b1;
-                    dmp_addr <= dmp_addr + 11'd1;
+                    dmp_addr <= dmp_addr + 1'b1;
                     // dl[0] is the decoder's previous ADC sample. The raw tap
                     // in mode 3 is one sample newer. An earlier apparent bit
                     // difference between these taps was a stale capture-card
@@ -509,7 +682,7 @@ module ntsc_capture #(
                               : (SCOPE_TEST_RAMP == 2) ? dmp_addr[10:3]
                               : (SCOPE_TEST_RAMP == 3) ? adc_r
                               : dl[0];
-                    if (dmp_addr == 11'd2047) begin
+                    if (&dmp_addr) begin
                         dmp_cap <= 1'b0;
                         dmp_rdy <= 1'b1;
                     end
@@ -525,7 +698,7 @@ module ntsc_capture #(
                                line_in_field > ((SCOPE_TEST_RAMP == 6) ? 9'd200 : 9'd40) &&
                                line_in_field < 9'd230))) begin
                     dmp_cap  <= 1'b1;
-                    dmp_addr <= 11'd0;
+                    dmp_addr <= {DUMP_AW{1'b0}};
                     dmp_arm  <= 23'd0;
                 end
             end
@@ -716,9 +889,16 @@ module ntsc_capture #(
 
                 clamp_win <= (ccnt >= CLAMP_START) && (ccnt < CLAMP_STOP);
 
+                // A forced start fires FMARGIN samples after where the last
+                // real edge would have been, so it inherits that edge's
+                // position -- lag supplies the margin.  It used to assume a
+                // 4.7 us sync (124), which put every forced line up to 17
+                // samples early on a source whose sync measures longer, and
+                // opened the burst gate on the sync tip.
                 if (line_edge) begin
                     ccnt <= LEGACY_TIMING ? 12'd0 :
-                            (line_real ? lowrun + LPF_DELAY + 1 : 12'd124);
+                            (line_real ? lowrun + LPF_DELAY + 1 : ccnt_real);
+                    if (line_real) ccnt_real <= lowrun + LPF_DELAY + 1;
                 end else if (ccnt != 12'hFFF) begin
                     ccnt <= ccnt + 12'd1;
                 end
@@ -727,9 +907,11 @@ module ntsc_capture #(
                     bp_acc <= 13'd0;
                 end else if (in_bp) begin
                     bp_acc <= bp_acc + {5'd0, adc_r};
-                end else if (cpos == BP_END) begin
+                end else if (cpos == BP_END && LEGACY_TIMING) begin
                     black <= bp_acc[12:5];        // 32-sample average
                 end
+                // Standard timing takes black from the front porch; see fp_cand.
+                if (!LEGACY_TIMING && line_real) black <= fp_cand;
 
                 if (in_active) begin
                     if (!a_idx[0]) begin
@@ -753,6 +935,10 @@ module ntsc_capture #(
     burst_nco #(.TRACK_GAP_SAMPLES(BURST_GAP_SAMPLES)) u_nco (
         .clk(clk_cap), .rst_n(rst_n), .sample_en(sample_stb),
         .sample(adc_r), .blank_ref(black), .burst_gate(in_burst),
+        // A line start inside the gate -- a real edge arriving just after a
+        // forced one -- restarts the integration, so samples taken on the
+        // forced timing (sync tip, on a late line) never reach the angle.
+        .gate_restart(sample_stb && line_edge),
         .phase(nco_phase), .inc(),
         .burst_i(burst_corr_i), .burst_q(burst_corr_q),
         .locked(burst_locked), .good_lines(), .phase_ref(nco_ref)

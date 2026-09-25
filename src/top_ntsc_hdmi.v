@@ -16,7 +16,13 @@ module top_ntsc_hdmi #(
     parameter integer SCOPE_TEST_RAMP = 0,
     parameter integer CLAMP_FORCE    = 0,
     parameter integer SCOPE_FREERUN  = 0,
-    parameter integer SCOPE_DIV   = 3
+    parameter integer SCOPE_DIV   = 3,
+    // Record 32768 consecutive ADC samples once, freeze them, and show them as
+    // grey nibble cells instead of a picture: scripts/tape_decode.py turns a
+    // captured frame back into the samples, for replay through the decoder in
+    // simulation.  The serial link on this board has never been dependable;
+    // the HDMI output always has.
+    parameter         TAPE        = 1'b0
 ) (
     input  wire       clk27,
 
@@ -89,7 +95,9 @@ module top_ntsc_hdmi #(
     wire signed [15:0] burst_corr_i, burst_corr_q;
     wire [15:0]  real_count;
     wire         dmp_we, dmp_rdy, dmp_ack;
-    wire [10:0]  dmp_addr, dmp_raddr;
+    localparam integer DUMP_AW = TAPE ? 15 : 11;
+    wire [DUMP_AW-1:0] dmp_addr;
+    wire [10:0]  dmp_raddr;
     wire [7:0]   dmp_data, dmp_rdata;
     wire [7:0]   black_level;
     wire [255:0] hist_flat;
@@ -98,6 +106,7 @@ module top_ntsc_hdmi #(
     reg [19:0] btn_timer;
     reg [21:0] btn_inhibit;
     reg [2:0]  phase_sel;
+    wire [2:0] phase_used;   // what the capture actually samples with
     reg [1:0]  gain_sel;
     reg        scope_only;
     reg [26:0] hunt_cnt;
@@ -143,11 +152,14 @@ module top_ntsc_hdmi #(
     ntsc_capture #(.LEGACY_TIMING(LEGACY_TIMING),
                    .SCOPE_TEST_RAMP(SCOPE_TEST_RAMP),
                                       .CLAMP_FORCE(CLAMP_FORCE),
-                   .SCOPE_FREERUN(SCOPE_FREERUN)) capture (
+                   .SCOPE_FREERUN(SCOPE_FREERUN),
+                   // A tape is recorded once and held: re-recording while it
+                   // is on screen would mix two recordings in one frame.
+                   .DUMP_AW(DUMP_AW), .SCOPE_LIVE(!TAPE)) capture (
         .clk_cap(serial_clk), .rst_n(cap_rst_n),
         .adc_d(adc_d), .adc_otr(adc_otr),
         .adc_clk(adc_clk), .adc_clamp(adc_clamp),
-        .phase_sel(phase_sel), .gain_sel(gain_sel),
+        .phase_sel(phase_sel), .phase_in_use(phase_used), .gain_sel(gain_sel),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_bank(wr_bank),
         .line_done(line_done), .vsync_pulse(vsync_pulse),
         .sync_locked(sync_locked), .period_out(line_period),
@@ -160,7 +172,7 @@ module top_ntsc_hdmi #(
         .nco_phase(nco_phase), .burst_locked(burst_locked),
         .burst_corr_i(burst_corr_i), .burst_corr_q(burst_corr_q),
         .dmp_we(dmp_we), .dmp_addr(dmp_addr), .dmp_data(dmp_data),
-        .dmp_rdy(dmp_rdy), .dmp_ack(dmp_ack),
+        .dmp_rdy(dmp_rdy), .dmp_ack(TAPE ? 1'b0 : dmp_ack),
         .black_out(black_level),
         .hist_flat(hist_flat)
     );
@@ -255,10 +267,25 @@ module top_ntsc_hdmi #(
                            ? ({x[9:0], 1'b0} + {1'b0, x[9:0]})
                            : {1'b0, x[9:0]};
 
-    line_buffer #(.ADDR_WIDTH(11), .DATA_WIDTH(8)) dumpbuf (
+    // Tape layout, 640 x 480: rows 0-7 identity bits, rows 8-15 a calibration
+    // staircase of the sixteen grey levels, rows 16-425 the samples.  Each
+    // sample is two 4-pixel cells, high nibble first, grey = nibble * 17, so
+    // 80 samples a row.  Sixteen levels 17 apart survive the capture card's
+    // RGB -> YUV422 -> RGB trip and its horizontal filtering, which dims a
+    // one-pixel mark by a third; four-pixel cells are read at their centre.
+    localparam [10:0] TAPE_ROW0 = 11'd16;
+    wire [10:0] tape_row  = y - TAPE_ROW0;
+    wire [14:0] tape_addr = {tape_row[8:0], 6'd0} + {2'd0, tape_row[8:0], 4'd0}
+                          + {8'd0, x[9:3]};
+
+    wire [DUMP_AW-1:0] scope_addr_w = scope_addr;   // zero-extended
+
+    line_buffer #(.ADDR_WIDTH(DUMP_AW), .DATA_WIDTH(8)) dumpbuf (
         .wr_clk(serial_clk), .wr_en(dmp_we), .wr_addr(dmp_addr),
         .wr_data(dmp_data),
-        .rd_clk(pixel_clk), .rd_addr(scope_addr), .rd_data(dmp_rdata)
+        .rd_clk(pixel_clk),
+        .rd_addr(TAPE ? tape_addr[DUMP_AW-1:0] : scope_addr_w),
+        .rd_data(dmp_rdata)
     );
 
     wire [11:0] trace_mul = ({4'd0, dmp_rdata} << 4) - {4'd0, dmp_rdata}; // x15
@@ -338,7 +365,7 @@ module top_ntsc_hdmi #(
     wire [10:0] ph_slot  = x / 11'd24;
     wire        on_phase = (y_d >= 11'd84) && (y_d < 11'd96) &&
                            (x < 11'd120) && (x % 11'd24 < 11'd20);
-    wire        ph_here  = (ph_slot == {8'd0, phase_sel});
+    wire        ph_here  = (ph_slot == {8'd0, phase_used});
     wire [20:0] qc_scaled = (({5'd0, qc_rate} << 2) + {5'd0, qc_rate}) >> 6;
     wire on_qual = (y_d >= 11'd100) && (y_d < 11'd108) &&
                    (x < (qc_scaled > 21'd640 ? 11'd640 : qc_scaled[10:0]));
@@ -371,7 +398,7 @@ module top_ntsc_hdmi #(
         .period(line_period),
         .vsync_pix(vsync_d), .hsync_pix(hsync_d),
         .black(black_level), .s_min(s_min), .s_max(s_max), .s_thr(s_thr),
-        .gain_sel(gain_sel), .phase_sel(phase_sel),
+        .gain_sel(gain_sel), .phase_sel(phase_used),
         .hist_flat(hist_flat),
         .dmp_rdy(dmp_rdy), .dmp_rdata(dmp_rdata),
         .dmp_raddr(dmp_raddr), .dmp_ack(dmp_ack),
@@ -404,7 +431,7 @@ module top_ntsc_hdmi #(
         if (!vid_rst_n) scope_frame <= 8'd0;
         else if (x == 0 && y == 0) scope_frame <= scope_frame + 8'd1;
     end
-    wire [31:0] scope_identity = {8'hA5, SCOPE_TEST_RAMP[3:0], phase_sel,
+    wire [31:0] scope_identity = {8'hA5, SCOPE_TEST_RAMP[3:0], phase_used,
                                   1'b0, scope_frame, 8'h01};
     wire on_scope_id = SCOPE_FULL_RANGE && y_d >= 11'd200 && y_d < 11'd208 && x < 11'd512;
     wire scope_id_bit = scope_identity[31-x[8:4]];
@@ -488,9 +515,21 @@ module top_ntsc_hdmi #(
 
 
 
-    wire [7:0] out_r = scope_sync ? diagnostic_r : bg_r;
-    wire [7:0] out_g = scope_sync ? diagnostic_g : bg_g;
-    wire [7:0] out_b = scope_sync ? diagnostic_b : bg_b;
+    // The read port has a clock of latency, so the cell geometry uses the
+    // registered x -- the same alignment active_d gives the output.
+    reg [10:0] x_d;
+    always @(posedge pixel_clk) x_d <= x;
+    wire [31:0] tape_id  = {16'hA55A, 7'd0, dmp_rdy, scope_frame};
+    wire        tape_bit = tape_id[31 - x_d[8:4]];
+    wire [3:0]  tape_nib = (y_d < 11'd8)  ? {4{tape_bit && x_d < 11'd512}}
+                         : (y_d < TAPE_ROW0) ? x_d[5:2]
+                         : (y_d < 11'd426) ? (x_d[2] ? dmp_rdata[3:0] : dmp_rdata[7:4])
+                         : 4'd0;
+    wire [7:0]  tape_grey = {tape_nib, tape_nib};
+
+    wire [7:0] out_r = TAPE ? tape_grey : scope_sync ? diagnostic_r : bg_r;
+    wire [7:0] out_g = TAPE ? tape_grey : scope_sync ? diagnostic_g : bg_g;
+    wire [7:0] out_b = TAPE ? tape_grey : scope_sync ? diagnostic_b : bg_b;
 
     hdmi_out out (
         .pixel_clk(pixel_clk), .serial_clk(serial_clk), .reset_n(vid_rst_n),

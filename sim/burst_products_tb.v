@@ -19,7 +19,7 @@ module burst_products_tb;
 
     burst_nco #(.SINE_REF(SINE_REF)) dut (
         .clk(clk), .rst_n(rst_n), .sample_en(sample_en),
-        .sample(sample), .blank_ref(black), .burst_gate(gate),
+        .sample(sample), .blank_ref(black), .burst_gate(gate), .gate_restart(1'b0),
         .burst_i(burst_i), .burst_q(burst_q)
     );
 

@@ -15,6 +15,7 @@ module scope_identity_tb;
         force dut.vid_rst_n = 1'b1;
         force dut.scope_sync = 1'b1;
         force dut.phase_sel = 3'd2;
+        force dut.phase_used = 3'd2;   // the header shows the phase in use
         force dut.x = test_x;
         force dut.y = test_y;
         force dut.y_d = test_y;

@@ -9,9 +9,12 @@ module tmds_encoder (
     input  wire [7:0] video_data,
     output reg  [9:0] tmds_word
 );
+    // Counts are unsigned and signs are read from sign bits: no signed
+    // comparison anywhere (apicula#541 miscompiles those on the GW2A
+    // depending only on placement).
     integer i;
-    integer ones_data;
-    integer ones_qm;
+    reg [3:0] ones_data;
+    reg [3:0] ones_qm;
     integer balance;
     reg [8:0] q_m;
     reg signed [5:0] disparity;
@@ -29,12 +32,12 @@ module tmds_encoder (
                 2'b11: tmds_word <= 10'b1010101011;
             endcase
         end else begin
-            ones_data = 0;
+            ones_data = 4'd0;
             for (i = 0; i < 8; i = i + 1)
-                ones_data = ones_data + video_data[i];
+                ones_data = ones_data + {3'd0, video_data[i]};
 
             q_m[0] = video_data[0];
-            if ((ones_data > 4) || ((ones_data == 4) && !video_data[0])) begin
+            if ((ones_data > 4'd4) || ((ones_data == 4'd4) && !video_data[0])) begin
                 for (i = 1; i < 8; i = i + 1)
                     q_m[i] = ~(q_m[i-1] ^ video_data[i]);
                 q_m[8] = 1'b0;
@@ -44,18 +47,18 @@ module tmds_encoder (
                 q_m[8] = 1'b1;
             end
 
-            ones_qm = 0;
+            ones_qm = 4'd0;
             for (i = 0; i < 8; i = i + 1)
-                ones_qm = ones_qm + q_m[i];
-            balance = (ones_qm * 2) - 8;
+                ones_qm = ones_qm + {3'd0, q_m[i]};
+            balance = ({28'd0, ones_qm} * 2) - 8;
 
             if ((disparity == 0) || (balance == 0)) begin
                 tmds_word[9]   <= ~q_m[8];
                 tmds_word[8]   <= q_m[8];
                 tmds_word[7:0] <= q_m[8] ? q_m[7:0] : ~q_m[7:0];
                 disparity <= disparity + (q_m[8] ? balance : -balance);
-            end else if (((disparity > 0) && (balance > 0)) ||
-                         ((disparity < 0) && (balance < 0))) begin
+            end else if ((!disparity[5] && (ones_qm > 4'd4)) ||
+                         ( disparity[5] && (ones_qm < 4'd4))) begin
                 tmds_word <= {1'b1, q_m[8], ~q_m[7:0]};
                 disparity <= disparity + (q_m[8] ? (2 - balance) : -balance);
             end else begin

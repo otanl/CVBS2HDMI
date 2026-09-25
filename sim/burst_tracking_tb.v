@@ -12,7 +12,7 @@ module burst_tracking_tb;
     wire locked;
     burst_nco dut (
         .clk(clk), .rst_n(rst_n), .sample_en(sample_en), .sample(sample),
-        .blank_ref(8'd100), .burst_gate(gate), .phase(), .inc(),
+        .blank_ref(8'd100), .burst_gate(gate), .gate_restart(1'b0), .phase(), .inc(),
         .burst_i(), .burst_q(), .locked(locked), .good_lines(),
         .phase_ref(phase_ref)
     );

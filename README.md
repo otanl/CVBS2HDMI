@@ -98,6 +98,30 @@ python3 scripts/scope_trace.py build/raw_free_new_012.png --trace-only --require
 書き込んだビットストリームの同一性は、診断用カウンターなしでは保証できません。
 振動部分の振幅測定は未検証です。`--trace-only`を使い、色のゲイン調整には流用しないでください。
 
+### 入力信号を全点記録してシミュレーションで再生する
+
+波形表示は3サンプルに1点の近似ですが、こちらはADCの生サンプルを連続32768点（約20ライン）
+そのまま取り出します。UARTは使いません。
+
+```sh
+make ntsc-tape-program                                  # 1回記録して凍結、灰色のセルで表示
+python3 scripts/live_capture.py build/tape 12 8
+python3 scripts/tape_decode.py build/tape.hex build/tape_0*.png   # 12フレームで多数決
+python3 scripts/tape_trim.py build/tape.hex sim/my_tape.hex 18    # 偶数ライン分に切り出す
+./scripts/tool iverilog -g2012 -s replay_tb -o build/replay_tb \
+    src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/replay_tb.v
+./scripts/tool vvp build/replay_tb +stim=sim/my_tape.hex +nsamp=<行数> +lines=400 +out=build/replay.txt
+python3 scripts/replay_quality.py build/replay.txt --png build/replay.png  # 実機と同じ尺度で評価
+python3 scripts/tape_reference.py sim/my_tape.hex                          # 浮動小数点の参照復号
+```
+
+`replay_quality.py --frames 'build/cap_*.png'` で実機のキャプチャも同じ尺度で評価できます。
+`make sim-tape` は記録表示とデコーダーを既知のメモリ内容で端から端まで検証します。
+
+**M5の信号では、正しく復号してもバーは輝度順に並びません**（M5自体が黄<シアン、緑<マゼンタ、
+赤<青の順で出力しています）。M5で評価するときは `video_quality.py` の「correct rows」ではなく、
+`replay_quality.py` の色相誤差とライン間変動を `tape_reference.py` の値と比べてください。
+
 ## ADC単体プローブ（27 MSPS）
 
 ステップ1の実測結果:

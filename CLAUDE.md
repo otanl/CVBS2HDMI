@@ -125,10 +125,9 @@ Things worth knowing before changing it:
   `ntsc_capture` runs at 135 MHz rather than 108.
 - **Synthesise with `-nodsp`.** The luma gain otherwise infers a `MULT9X9` that Apicula cannot
   pack (`KeyError: 'IRBY_IREG0BL_0'`). The gains are constants, built from shift-adds.
-- **The sampling phase is found automatically.** The correct phase turned out to be 4 (29.6 ns),
-  not the 3 that was hard-coded from the datasheet's output delay — so the top steps through all
-  five phases whenever sync is not locked and stops when it locks. Do not replace this with a
-  constant; it is self-calibrating and cost nothing.
+- **The sampling phase is measured, continuously** (`AUTO_PHASE`, since 2026-09-25). A fixed
+  phase is placement-dependent and was the cause of colour that came and went between rebuilds;
+  see *The sampling instant moves with every placement* below. Do not go back to a constant.
 - **The analog clamp is not used**; DC restoration is digital, from the back porch at ccnt
   216..248. See the clamp note above for why.
 - **Bob line doubling is implicit.** 480p has twice the line rate of 480i, so each captured line
@@ -972,23 +971,158 @@ same lines rock steady. `black` is averaged over 32 samples of back porch at
 `16 x 2.8125` -- the luma gain at `gain_sel` 0 -- is 45, which is the measured
 alternation.
 
-The likely mechanism, not yet proved: the burst is half-wave (above), so it
-carries about +16 codes of DC over its 2.5 us, and a 1 uF AC-coupled input
-answers that with an equal undershoot immediately after it. The front porch,
-60 us later, has recovered. That predicts the sign and the size, and it predicts
-that the dip decays along the line -- which is the measurement to make next,
-because it decides between the two fixes:
+**Resolved: it is the generator, and black now comes from the front porch.**
+The AC-coupling explanation first recorded here was wrong -- a 1 uF input into
+the AD9280's high impedance has a time constant of milliseconds, not
+microseconds.  A full-rate recording (below) shows the cause directly: the M5's
+`Panel_CVBS` uses two DMA line buffers and writes their breezeway, back porch
+and right-hand edge only during the vertical interval, so the two carry
+different blanking.  One line in two has its breezeway at sync level (a
+132-sample sync) and back porch at 117; the other has breezeway and back porch
+at 101 and its black bar at 85, near sync tip.  The front porch is 117 on both,
+and it is blanking by definition on any source, so `black` is now its 16-sample
+average, taken as the slicer first falls and committed only when that run
+qualifies as a sync.  Measured: white-bar luma changes 2.3 codes line to line in
+the replay and 0.7..1.3 on the board, against 46 before.
 
-- if it decays, take `black` from the **front porch** (dead flat at 117 on every
-  frame) instead of the back porch;
-- if it does not, the back-porch window has to move clear of the burst, and
-  32 samples is 4.5 subcarrier cycles, so it should become a whole number of
-  cycles as well.
+### A full-rate recording of the source, replayed in simulation (2026-09-25)
 
-Do not tune chroma phase or gain until this is fixed. It moves the black
-reference by 16 codes on half the lines, and everything downstream of luma --
-the bar ordering, the UV fit's coherence, any hue measurement -- is measured
-against it.
+This is what turned three days of reading a picture into an afternoon of
+measuring a signal, and it is the first tool to reach for next time.
+
+- `make ntsc-tape-program` records 32768 consecutive ADC samples (20 lines)
+  once, freezes them, and shows them as grey cells: two 4-pixel cells a
+  sample, sixteen levels 17 apart, a calibration staircase and an identity
+  header.  One HDMI frame holds the whole recording.
+- `scripts/tape_decode.py OUT.hex FRAMES...` learns the levels from the
+  staircase, reads each cell at its centre, votes across frames and rejects any
+  frame whose header, completion flag or level spacing is wrong.  `make
+  sim-tape` checks the recorder and the decoder end to end against a known
+  memory image, pixel for pixel.  On the board: 12 frames, unanimous, worst
+  decision margin 9 codes where the levels are 17 apart.
+- `scripts/tape_trim.py` cuts it to a whole, even number of lines, so the loop
+  keeps the subcarrier continuous and any line-alternating property in step.
+- `sim/replay_tb.v` feeds it through `ntsc_capture` and writes every decoded
+  line; `scripts/replay_quality.py` scores that -- and, with `--frames`, board
+  captures -- with the same bar geometry.  Before any fix the replay predicted
+  the board's white-bar line-to-line luma change to within a code (46.3 against
+  45.1), which is what makes it trustworthy.
+- `scripts/tape_reference.py` decodes the recording in floating point, per-line
+  burst phase and all: what *this* signal should decode to, which is the only
+  fair target when the source is imperfect.
+
+`sim/m5_tape_18lines.hex` is the recording of the M5 through the respun board.
+
+### What the M5 actually transmits, measured at full rate
+
+Several conclusions recorded above came from five usable bits or from reading
+the scope trace; these supersede them.
+
+| | measured | notes |
+|---|---|---|
+| line period | **1601.6 samples** | nominal.  The "+0.29%, fsc/fh = 226.847" above is wrong; the M5 clocks its DAC at 4 fsc with 910 samples a line, so fsc/fh is 227.5 by construction |
+| sync | 116 samples, tip 83; 132 on alternate lines | the two DMA line buffers differ, see the back-porch note |
+| blanking | 117 (front porch, every line); back porch 117 / 101 alternating | |
+| burst | 101 / 166 square wave, 2.5 us | not centred on blanking |
+| black bar | 117 / 85 alternating | the 85 sits at sync-tip level |
+| bars' luma, IRE | 64, 50, 58, 37, 38, 15, 16, -16 | **not descending**: yellow < cyan, green < magenta, red < blue |
+| bars' chroma, IRE | 6, 8.5, 7.6, 18, 30, 43, 53 | yellow and cyan carry almost none (75% bars want 44 and 62) |
+
+Two consequences:
+
+- **The row-order metric cannot be used on this source.**  A correct decoder
+  must put the bars out of luma order, because the M5 sends them that way;
+  `video_quality.py`'s "correct rows" reads about 20..35% on a picture that is
+  right.  Use `replay_quality.py`'s hue error and line-to-line change against
+  `tape_reference.py` instead.  The 100% measured in September was an artefact
+  of the dead bits.
+- **Pale yellow and cyan are the source**, not the decoder.
+
+### The diagonal crawl is aliasing of the M5's DAC, and no decoder can remove it
+
+What remains visible after every fix is a fine diagonal texture inside the
+coloured bars.  The floating-point reference shows the same thing, so it is in
+the samples.  A least-squares fit over each bar finds two components 143 kHz
+either side of the subcarrier, as large as the chroma itself on some bars --
+green: 16.6 codes of chroma, 11.5 at 3.437 MHz and 7.0 at 3.722:
+
+- 3.722 MHz = 25.2 - 6 fsc, the M5 waveform's 6th harmonic folded;
+- 3.437 MHz = 8 fsc - 25.2, the DAC's sample-rate image folded.
+
+The ESP32 DAC has no reconstruction filter, and 25.2 MSPS happens to fold both
+products onto the chroma band.  Nothing 143 kHz from the carrier can be
+separated without a chroma bandwidth useless for real pictures.  A real source
+(DVD, console, camera) filters its output and does not produce this.  The
+remedies are analogue: a reconstruction low-pass on the M5's output, or a
+proper anti-alias filter in front of the AD9280 (C13 alone is first order, and
+820 pF with the 75-ohm source would also cut the chroma).
+
+### Four decoder faults, found by replaying the recording
+
+All decided in simulation first, then confirmed on the board.
+
+1. **The slice sat on the sync tip's noise.**  `THR_SHIFT` 5 put the threshold
+   3 codes above a low-passed tip wandering over 82..85, which broke half the
+   syncs into fragments: 112 of 249 replayed lines coasted on the flywheel, with
+   every window misplaced.  4 (about 5 codes up) qualifies all 18 syncs of the
+   recording; 14 of 249 lines coast, one per loop, at a genuine glitch in the
+   recording where the M5's black-bar pulse runs into the next sync.
+2. **Black from the back porch** -- see the back-porch section.  Now the front
+   porch.
+3. **Forced lines assumed a 4.7 us sync** (`ccnt` 124).  They now inherit the
+   position the last real edge was measured at.
+4. **A late real edge left the burst gate integrating sync tip.**  The flywheel
+   fires first, the gate opens on its timing, and the real edge moves the line
+   without restarting the integration.  `gate_restart` now clears the burst
+   correlator at any line start.  This is what `sim-video-late` failed on when
+   the slice moved, and fixing it restored `max_error=17` rather than widening
+   a tolerance.
+
+### The sampling instant moves with every placement, and it looked like a compiler bug
+
+**The largest single fault, and probably the explanation for the unexplained
+rebuild-to-rebuild swings recorded in this file.**
+
+The ADC is clocked from a register in the fabric and read back through the
+fabric, and one of five 126 MHz reads per conversion is used.  Which read is
+safe depends on the round trip -- routing out, the AD9280's output delay,
+routing back -- and that changes with every placement.  With the phase fixed at
+2, the same RTL decoded the recording perfectly in simulation and scrambled the
+colour on the board, and a rebuild with no logical change moved the picture
+vertically as well.  It fails in a way that points everywhere but at itself:
+flat areas decode, because neighbouring samples agree in their upper bits and
+the luma filter averages the rest, while the burst, swinging 65 codes every
+sample, is corrupted on every line.  Brightness right, colour wrong.
+
+`AUTO_PHASE` measures it instead.  Per read phase it counts how often the data
+differs from the previous clock's, which locates the switching window, and
+reads at the quietest point -- the minimum of `n[s-1] + 2n[s] + 2n[s+1] +
+n[s+2]` -- re-evaluated every 4 ms with hysteresis.  `sim/replay_tb.v`'s
+`ADC_DELAY`/`MIX` model a switching window on the fixed read: it distorts the
+decode with the phase fixed, and the calibration restores it exactly.
+
+Measured on the board, two different placements, against the replay and the
+floating-point reference (hue error in degrees; wobble is the median
+line-to-line change):
+
+| | green | magenta | red | blue | wobble |
+|---|---|---|---|---|---|
+| fixed phase (fix4) | +77 | +61 | +115 | +68 | ~30 |
+| calibrated, seed 3 | -2 | -17 | -9 | +25 | 2..3 |
+| calibrated, seed 5 | -4 | -15 | -9 | +26 | 2..6 |
+| replay (simulation) | -1 | -13 | -7 | +23 | 3..9 |
+| reference (float) | -0 | -19 | -1 | +25 | -- |
+
+The residual still varies between placements -- 5 read points 7.9 ns apart is
+coarse -- so the shipping seed was chosen by measurement over seeds 3, 5, 7, 11
+and 13: **seed 11**, wobble 4.8 degrees mean (5.7..9.6 for the rest), hues within
+0..9 degrees of the reference, 143.2 MHz.  `make ntsc` rebuilds it byte for
+byte.  Finer control of the read instant (IDDR, or the GW2A's IODELAY if the
+open flow supports it) is the way to take the remaining spread out.
+
+The `adc_clk_r` comment in `ntsc_capture.v` -- "a mux here cost the picture
+half its rows" -- was this same effect: any change to the design moved the
+read instant.
 
 ### Apicula has an open placement-dependent miscompute bug on this exact chip
 
@@ -1011,7 +1145,23 @@ one session, and several hours went into hunting an RTL cause -- including
 removing a parameter from the ADC clock path and measuring *worse*.  There was
 no RTL cause.
 
-**The design no longer contains a signed comparison.**  There were two, and
+**Correction, 2026-09-25: this claim was false.**  Yosys found eleven signed
+comparison cells when asked directly -- the grep below cannot see a comparison
+between values merely *declared* signed, nor one against a signed integer such
+as `P_BAND * 256`, which kept the "fixed" plausibility test signed.  All eleven
+are gone now (the NCO clamp, the RGB clip, the plausibility test and five in the
+TMDS encoder's disparity logic), and `make check-signed`, part of `make test`,
+elaborates the design and fails on any signed `$lt/$le/$gt/$ge`.  Removing the
+NCO clamp's the first time cost 30 MHz; this time the loop update was pipelined
+instead, from registered values, with bit-identical bench figures.
+
+And note what this section attributed to Apicula.  The fixed ADC sampling
+phase is a demonstrated placement-dependent mechanism that produces exactly
+those swings -- see *The sampling instant moves with every placement* -- so
+the rebuild-to-rebuild figures above are at least as likely to have been that.
+Keep the signed comparisons out anyway; the bug is real upstream.
+
+The original text, for the record:  There were two, and
 both are gone:
 
 - the flywheel's period plausibility test, `period_error` against `+/-P_BAND`,

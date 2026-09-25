@@ -47,7 +47,7 @@ module burst_nco_tb;
 
     burst_nco #(.KP_SHIFT(KP), .KI_SHIFT(KI), .THREE_LEVEL(TL), .AVG_LOG2(AVG)) dut (
         .clk(clk), .rst_n(rst_n), .sample_en(sample_en),
-        .sample(sample), .blank_ref(BLANK), .burst_gate(burst_gate),
+        .sample(sample), .blank_ref(BLANK), .burst_gate(burst_gate), .gate_restart(1'b0),
         .phase(phase), .inc(inc),
         .burst_i(burst_i), .burst_q(burst_q), .locked(locked), .good_lines(good_lines), .phase_ref()
     );

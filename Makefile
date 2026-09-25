@@ -325,7 +325,11 @@ $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-NTSC_SEED ?= 3
+# Seed 11, chosen by measurement on the board: of seeds 3, 5, 7, 11 and 13 it
+# gave the least line-to-line hue wobble (4.8 deg against 5.7..9.6) and hues
+# closest to the floating-point reference, at 143.2 MHz.  A seed is part of
+# the build: re-measure after any RTL change (CLAUDE.md).
+NTSC_SEED ?= 11
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
@@ -404,6 +408,29 @@ $(NTSC_SCOPE_BITSTREAM): $(NTSC_SCOPE_PNR)
 ntsc-scope-program: $(NTSC_SCOPE_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
 
+# Record 32768 consecutive ADC samples once and show them as grey cells for
+# scripts/tape_decode.py -- a full-rate recording of the real source, for
+# replay through the decoder in simulation, with no serial link involved.
+NTSC_TAPE_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_tape.json
+NTSC_TAPE_PNR := $(BUILD_DIR)/$(NTSC_TOP)_tape_pnr.json
+NTSC_TAPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_tape.fs
+.PHONY: ntsc-tape ntsc-tape-program
+ntsc-tape: $(NTSC_TAPE_BITSTREAM)
+
+$(NTSC_TAPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set TAPE 1 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+
+$(NTSC_TAPE_PNR): $(NTSC_TAPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
+	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
+		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
+
+$(NTSC_TAPE_BITSTREAM): $(NTSC_TAPE_PNR)
+	$(TOOL) gowin_pack -d $(FAMILY) -o $@ $<
+
+ntsc-tape-program: $(NTSC_TAPE_BITSTREAM)
+	$(TOOL) openFPGALoader -b $(BOARD) $<
+
 check-tools:
 	@$(TOOL) yosys -V >/dev/null
 	@$(TOOL) nextpnr-himbaechel --version >/dev/null
@@ -413,7 +440,7 @@ check-tools:
 	@echo "All required tools are available."
 
 .PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun sim-tape check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -423,6 +450,18 @@ sim-burst-products: | $(BUILD_STAMP)
 			src/chroma_sincos.v sim/burst_products_tb.v && \
 		$(TOOL) vvp $(BUILD_DIR)/burst_products_tb || exit $$?; \
 	done
+
+.PHONY: check-signed
+check-signed:
+	python3 scripts/check_signed_compare.py
+
+.PHONY: sim-tape
+sim-tape: | $(BUILD_STAMP)
+	$(TOOL) iverilog -g2012 -s tape_tb -o $(BUILD_DIR)/tape_tb \
+		$(NTSC_RTL) sim/gowin_prim_sim.v sim/tape_tb.v
+	$(TOOL) vvp $(BUILD_DIR)/tape_tb
+	python3 scripts/tape_decode.py $(BUILD_DIR)/tape_tb_decoded.hex $(BUILD_DIR)/tape_tb.ppm
+	cmp $(BUILD_DIR)/tape_tb_decoded.hex $(BUILD_DIR)/tape_tb_mem.hex
 
 .PHONY: sim-scope-freerun
 sim-scope-freerun: | $(BUILD_STAMP)

@@ -54,6 +54,7 @@ module burst_nco #(
     input  wire [7:0]  sample,
     input  wire [7:0]  blank_ref,     // back porch level, the burst's centre
     input  wire        burst_gate,    // high across the burst
+    input  wire        gate_restart,  // discard what the gate has gathered
 
     output reg  [31:0] phase,
     output reg  [31:0] inc,
@@ -146,7 +147,14 @@ module burst_nco #(
     assign phase_ref = phase - burst_off + HUE_OFFSET;
 
     wire signed [19:0] sum_now  = err_sum + {{4{err[15]}}, err};
-    wire signed [31:0] sum_ext  = {{12{sum_now[19]}}, sum_now};
+    // Registered every clock.  The last burst product lands three clocks after
+    // the last gated sample and the gate's fall is noticed two clocks later,
+    // so both hold the final correlation by then -- and taking them from a
+    // register keeps the correlation's carry chains out of the loop update,
+    // which with the NCO clamp behind them ran at 100 MHz against 126.
+    reg signed [19:0] sum_r;
+    reg        [16:0] mag_r;
+    wire signed [31:0] sum_ext  = {{12{sum_r[19]}}, sum_r};
     // A negative shift count is not a right shift in Verilog.
     wire signed [31:0] phase_adj = (KP_SHIFT >= AVG_LOG2)
                                 ? (sum_ext <<< (KP_SHIFT - AVG_LOG2))
@@ -155,6 +163,19 @@ module burst_nco #(
     localparam [31:0] INC_RANGE = INC_NOM / 1000; // +/-1000 ppm, no wind-up
     wire signed [32:0] inc_next = $signed({1'b0, inc}) +
                                   $signed({freq_adj[31], freq_adj});
+    // The increment is clamped a clock after the loop update, from a register.
+    // The next sample strobe is still three clocks away, so it is the first to
+    // use the new increment, exactly as before.
+    reg signed [32:0] inc_next_r;
+    reg               inc_pend;
+    // The clamp without a signed comparison.  Apicula miscompiles those on this
+    // part depending only on placement (YosysHQ/apicula#541): the same RTL
+    // decoded the M5 recording with stable hue in simulation and scrambled the
+    // hue line to line on the board.  Both bounds are positive constants, so
+    // the sign bit picks the answer for a negative value and an unsigned
+    // compare against a constant -- the same carry chain -- settles the rest.
+    wire inc_over  = !inc_next_r[32] && (inc_next_r[31:0] > INC_NOM + INC_RANGE);
+    wire inc_under =  inc_next_r[32] || (inc_next_r[31:0] < INC_NOM - INC_RANGE);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -184,6 +205,8 @@ module burst_nco #(
             gap_resync <= 1'b0;
             cordic_start <= 1'b0;
             locked     <= 1'b0;
+            sum_r <= 20'sd0; mag_r <= 17'd0;
+            inc_next_r <= 33'sd0; inc_pend <= 1'b0;
         end else begin
             i_weight <= SINE_REF ? lut_cosine : (ci_pos ? 8'sd64 : ci_neg ? -8'sd64 : 8'sd0);
             q_weight <= SINE_REF ? lut_sine : (cq_pos ? 8'sd64 : cq_neg ? -8'sd64 : 8'sd0);
@@ -202,11 +225,24 @@ module burst_nco #(
                 i_product <= sample_centred * sample_i_weight;
                 q_product <= sample_centred * sample_q_weight;
             end
-            if (product_pending) begin
+            if (gate_restart) begin
+                // Every product of an earlier sample has already landed: they
+                // take three clocks and samples are five apart.
+                i_acc <= 24'sd0;
+                q_acc <= 24'sd0;
+            end else if (product_pending) begin
                 i_acc <= i_acc + {{6{i_product[17]}}, i_product};
                 q_acc <= q_acc + {{6{q_product[17]}}, q_product};
             end
             if (cordic_start) cordic_start <= 1'b0;
+            sum_r      <= sum_now;
+            mag_r      <= mag;
+            inc_next_r <= inc_next;
+            if (inc_pend) begin
+                inc_pend <= 1'b0;
+                inc <= inc_over  ? INC_NOM + INC_RANGE
+                     : inc_under ? INC_NOM - INC_RANGE : inc_next_r[31:0];
+            end
             if (cordic_done) begin
                 sect_r   <= cordic_angle;
                 sect_new <= 1'b1;
@@ -276,6 +312,7 @@ module burst_nco #(
                 err_sum <= 20'sd0;
                 avg_cnt <= 8'd0;
                 inc <= INC_NOM;
+                inc_pend <= 1'b0;
             end
             // Snap the phase after a gap, but keep the learned step.
             //
@@ -302,7 +339,7 @@ module burst_nco #(
                 i_acc   <= 16'sd0;
                 q_acc   <= 16'sd0;
 
-                if (mag >= MAG_MIN) begin
+                if (mag_r >= MAG_MIN) begin
                     burst_age <= 18'd0;
                     cordic_start <= 1'b1;
                     correlation_adjust <= SNAP_PER_LINE ? (SNAP_PHASE - phase - inc)
@@ -312,13 +349,10 @@ module burst_nco #(
                         err_sum <= 20'sd0;
                         phase   <= SNAP_PER_LINE ? SNAP_PHASE
                                                  : (phase + inc + phase_adj);
-                        inc <= (inc_next > $signed({1'b0, INC_NOM + INC_RANGE}))
-                             ? INC_NOM + INC_RANGE
-                             : ((inc_next < $signed({1'b0, INC_NOM - INC_RANGE}))
-                                ? INC_NOM - INC_RANGE : inc_next[31:0]);
+                        inc_pend <= 1'b1;
                     end else begin
                         avg_cnt <= avg_cnt + 8'd1;
-                        err_sum <= sum_now;
+                        err_sum <= sum_r;
                         if (SNAP_PER_LINE) phase <= SNAP_PHASE;
                     end
                     if (good_lines != 8'hFF) good_lines <= good_lines + 8'd1;
