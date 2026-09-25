@@ -39,9 +39,27 @@ def period_of(s):
     return (edges[-1] - edges[0]) / round((edges[-1] - edges[0]) / 1601.6)
 
 
+def bars_present(s, P):
+    """True when the recording holds the colour bars, not the grey staircase.
+
+    The recorder triggers on any line from 41 to 229, so about one recording
+    in four lands in the bottom quarter of the pattern, where there is no
+    chroma at all: compared with one on the bars, it reads as the filter
+    having removed 22 dB of colour.  The strong bars carry tens of codes of
+    subcarrier; the staircase carries none."""
+    swing = []
+    for b in (3, 4, 5, 6):
+        seg = s[int(40 + 2 * P) + int(262 + b * 157.5) + 8:][:140]
+        swing.append(float(np.std(seg)))
+    return min(swing) > 8.0
+
+
 def fit(path):
     s = np.array([int(v, 16) for v in open(path) if v.strip()], dtype=float)
     P = period_of(list(s.astype(int)))
+    if not bars_present(s, P):
+        raise SystemExit("%s: no colour bars at the expected place -- the recording "
+                         "landed on the grey staircase; record again" % path)
     fsc = 227.5 / P * FS
     freqs = [fsc, FS - 6 * fsc, 8 * fsc - FS]
     lines = int((len(s) - 40) // P) - 1

@@ -1203,14 +1203,23 @@ colour band -3.4..+0.6 dB, 21.5 MHz at least 19.9 dB down, 28.6 MHz at least
 24.9 dB down, peaking no more than +0.7 dB.
 
 Measuring it needs one M5 boot on both sides, so **keep the M5 powered through
-the rework** and unplug only the Tang.  `sim/m5_tape_base_18lines.hex` is the
-before recording, taken on the boot that is running now (2026-09-25).  After:
-`make ntsc-tape-program`, capture 12 frames with `scripts/live_capture.sh`,
+the rework** and unplug only the Tang.  `sim/m5_tape_base3_18lines.hex` is the
+before recording, taken on the boot that is running now (2026-09-25) with
+`build/master_tape.fs` -- use that same bitstream for the after recording.
+After: load it, capture 12 frames with `scripts/live_capture.sh`,
 `scripts/tape_decode.py`, `scripts/tape_trim.py ... 18`, then
-`python3 scripts/filter_check.py sim/m5_tape_base_18lines.hex AFTER.hex`,
+`python3 scripts/filter_check.py sim/m5_tape_base3_18lines.hex AFTER.hex`,
 which fits burst and bars at the subcarrier and at both alias frequencies and
 prints the chroma gain the decoder must make up.  If the M5 reboots, record a
 new baseline first -- a comparison across a reboot measures the reboot.
+
+**The recorder lands on the grey staircase about one time in four** (it
+triggers on any line from 41 to 229, and the bottom quarter of the pattern
+has no chroma).  Compared with a recording on the bars, that reads as 22 dB
+of colour removed.  `filter_check.py` now refuses such a recording; record
+again.  The floor between two recordings with nothing changed, same boot:
+strong-bar chroma +0.1 dB, aliases -0.4 and -1.1 dB (individual small
+components up to 4 dB).  The filter should move the aliases by about 20.
 
 ### The capture card may expand limited range
 
