@@ -269,8 +269,8 @@ module top_ntsc_hdmi #(
 
     // Tape layout, 640 x 480: rows 0-7 identity bits, rows 8-15 a calibration
     // staircase of the sixteen grey levels, rows 16-425 the samples.  Each
-    // sample is two 4-pixel cells, high nibble first, grey = nibble * 17, so
-    // 80 samples a row.  Sixteen levels 17 apart survive the capture card's
+    // sample is two 4-pixel cells, high nibble first, grey = 16 + 14 * nibble,
+    // so 80 samples a row.  Sixteen levels 14 apart survive the capture card's
     // RGB -> YUV422 -> RGB trip and its horizontal filtering, which dims a
     // one-pixel mark by a third; four-pixel cells are read at their centre.
     localparam [10:0] TAPE_ROW0 = 11'd16;
@@ -525,7 +525,12 @@ module top_ntsc_hdmi #(
                          : (y_d < TAPE_ROW0) ? x_d[5:2]
                          : (y_d < 11'd426) ? (x_d[2] ? dmp_rdata[3:0] : dmp_rdata[7:4])
                          : 4'd0;
-    wire [7:0]  tape_grey = {tape_nib, tape_nib};
+    // 16 + 14 * nibble, 16..226: inside video's limited range, so a capture
+    // card that expands 16..235 to 0..255 still gives sixteen distinct levels.
+    // Plain nibble * 17 collapsed 0 with 1 and 14 with 15 when the card
+    // switched to doing that after a replug.
+    wire [7:0]  tape_grey = 8'd16 + {1'b0, tape_nib, 3'b000} + {2'b00, tape_nib, 2'b00}
+                          + {3'b000, tape_nib, 1'b0};
 
     wire [7:0] out_r = TAPE ? tape_grey : scope_sync ? diagnostic_r : bg_r;
     wire [7:0] out_g = TAPE ? tape_grey : scope_sync ? diagnostic_g : bg_g;

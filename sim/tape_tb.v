@@ -30,7 +30,7 @@ module tape_tb;
                 nib = ((x/4) % 2) ? (word & 15) : (word >> 4);
             end else
                 nib = 0;
-            expected = nib * 17;
+            expected = 16 + nib * 14;
         end
     endfunction
 

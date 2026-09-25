@@ -5,7 +5,8 @@
 as grey cells: rows 0-7 carry 32 identity bits (16 px each, 0xA55A, a
 recording-complete flag, a frame counter), rows 8-15 a calibration staircase of
 the sixteen grey levels, and rows 16-425 the samples, 80 a row, each as two
-4-pixel cells -- high nibble, then low -- with grey = nibble * 17.
+4-pixel cells -- high nibble, then low -- with grey = 16 + 14 * nibble, inside
+video's limited range so a card that expands 16..235 keeps them distinct.
 
 Levels are learned from the calibration rows of every frame rather than
 assumed, so a capture card that maps RGB to limited range, or shifts the

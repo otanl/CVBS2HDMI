@@ -1183,6 +1183,44 @@ the M5 rebooted between the two recordings, and every bar's chroma changed by a
 different factor (0.13..1.67) and the burst's third harmonic by 22 dB, which no
 capacitor does.  A before/after of the filter needs one M5 boot on both sides.
 
+### Why the crawl cannot be removed digitally
+
+Both products are exact multiples of the M5's line (6 fsc and 8 fsc are 1365
+and 1820 cycles a line) while chroma alternates, so a one-line comb would
+cancel them in the analogue domain.  It does not survive sampling: a line is
+1601.58 samples, and a fractional delay interpolated on the samples shifts an
+alias as the 3.7 MHz tone it appears to be, not as the 21.5 or 28.6 MHz tone it
+is -- a 0.58-sample delay is off by about 150 degrees, so nothing cancels.
+Averaging ten or so lines vertically smears real pictures, and a field comb
+needs the SDRAM frame buffer.  The fix is analogue.
+
+### An LC anti-alias filter on R3's pads (*Planned*, parts arriving)
+
+Remove R3 (20 ohm, 0603) and bridge its pads with **1 uH in series with
+47 ohm** (39..56 is fine), leaded parts, short leads; C13 stays 680 pF.  With
+the 75-ohm source, the design calculation gives, across the parts' tolerance:
+colour band -3.4..+0.6 dB, 21.5 MHz at least 19.9 dB down, 28.6 MHz at least
+24.9 dB down, peaking no more than +0.7 dB.
+
+Measuring it needs one M5 boot on both sides, so **keep the M5 powered through
+the rework** and unplug only the Tang.  `sim/m5_tape_base_18lines.hex` is the
+before recording, taken on the boot that is running now (2026-09-25).  After:
+`make ntsc-tape-program`, capture 12 frames with `scripts/live_capture.sh`,
+`scripts/tape_decode.py`, `scripts/tape_trim.py ... 18`, then
+`python3 scripts/filter_check.py sim/m5_tape_base_18lines.hex AFTER.hex`,
+which fits burst and bars at the subcarrier and at both alias frequencies and
+prints the chroma gain the decoder must make up.  If the M5 reboots, record a
+new baseline first -- a comparison across a reboot measures the reboot.
+
+### The capture card may expand limited range
+
+After a replug the UGREEN card began mapping 16..235 to 0..255, which collapsed
+the tape's nibble levels 0/1 and 14/15 (it used grey = 17 x nibble).  The tape
+now uses grey = 16 + 14 x nibble, inside limited range either way, and
+`tape_decode.py` learns the levels from the staircase rows of each frame.
+Hue survives the expansion; chroma magnitudes read about 16% high in picture
+captures taken that way, so compare magnitudes only within one capture state.
+
 ### Apicula has an open placement-dependent miscompute bug on this exact chip
 
 **The same RTL produces different functional results depending only on
