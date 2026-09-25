@@ -4,7 +4,7 @@ module scope_identity_tb;
     reg clk = 0;
     always #5 clk = ~clk;
     reg [10:0] test_x = 8, test_y = 204;
-    reg [31:0] expected = 32'hA5245C01;
+    reg [31:0] expected = 32'hA5225C02;   // version 2: mode 2, rotation 2
     integer cell_index;
     reg [7:0] before_frame;
     top_ntsc_hdmi #(.SCOPE_ONLY(1), .SCOPE_FULL_RANGE(1), .SCOPE_TEST_RAMP(2)) dut (
@@ -14,8 +14,8 @@ module scope_identity_tb;
         force dut.pixel_clk = clk;
         force dut.vid_rst_n = 1'b1;
         force dut.scope_sync = 1'b1;
-        force dut.phase_sel = 3'd2;
-        force dut.phase_used = 3'd2;   // the header shows the phase in use
+        force dut.phase_sel = 4'd2;
+        force dut.phase_used = 4'd2;   // the header shows the rotation in use
         force dut.x = test_x;
         force dut.y = test_y;
         force dut.y_d = test_y;

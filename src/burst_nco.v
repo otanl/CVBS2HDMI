@@ -88,7 +88,15 @@ module burst_nco #(
     wire signed [15:0] i_scaled = i_acc >>> 6;
     wire signed [15:0] q_scaled = q_acc >>> 6;
     wire signed [7:0] lut_cosine, lut_sine;
-    reg signed [7:0] i_weight, q_weight;
+    // Straight from the current phase, not registered: the sample on this
+    // clock was taken at this phase.  A register here lags the phase by a
+    // clock, which at five clocks per sample was invisible and at one sample
+    // per clock pairs every sample with the previous sample's phase -- 51
+    // degrees against the demodulator, which pairs them correctly.
+    wire signed [7:0] i_weight = SINE_REF ? lut_cosine
+                               : (ci_pos ? 8'sd64 : ci_neg ? -8'sd64 : 8'sd0);
+    wire signed [7:0] q_weight = SINE_REF ? lut_sine
+                               : (cq_pos ? 8'sd64 : cq_neg ? -8'sd64 : 8'sd0);
     reg signed [8:0] sample_centred;
     reg signed [7:0] sample_i_weight, sample_q_weight;
     reg signed [17:0] i_product, q_product;
@@ -192,7 +200,6 @@ module burst_nco #(
             inc        <= INC_NOM;
             i_acc      <= 16'sd0;
             q_acc      <= 16'sd0;
-            i_weight <= 0; q_weight <= 0;
             sample_centred <= 0; sample_i_weight <= 0; sample_q_weight <= 0;
             input_pending <= 0;
             i_product <= 0; q_product <= 0; product_pending <= 0;
@@ -218,8 +225,6 @@ module burst_nco #(
             sum_r <= 20'sd0; mag_r <= 17'd0;
             inc_next_r <= 33'sd0; inc_pend <= 1'b0;
         end else begin
-            i_weight <= SINE_REF ? lut_cosine : (ci_pos ? 8'sd64 : ci_neg ? -8'sd64 : 8'sd0);
-            q_weight <= SINE_REF ? lut_sine : (cq_pos ? 8'sd64 : cq_neg ? -8'sd64 : 8'sd0);
             // Subtraction plus a LUT multiplier missed 126 MHz (118.4 MHz
             // routed). There are five clocks per sample, so separate them.
             // Latch BOTH operands on the original strobe: continuously

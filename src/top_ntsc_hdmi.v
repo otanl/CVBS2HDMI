@@ -1,13 +1,15 @@
 `default_nettype none
 
 // Composite NTSC-J -> AD9280 -> 640x480p DVI-compatible HDMI.
-// One 126 MHz PLL supplies the capture/serializer clock and, divided by
-// five, the 25.2 MHz pixel clock. Completed input lines are bob displayed
-// through an ownership-protected four-bank line store. S1 toggles diagnostics;
-// S2 steps the ADC sampling phase. Default output is the decoded image.
+// One 126 MHz PLL supplies the serializer clock and, divided by five, the
+// 25.2 MHz pixel clock, on which the whole decoder runs at one sample per
+// clock; 126 MHz otherwise reaches only the converter's clock.  Completed
+// input lines are bob displayed through an ownership-protected four-bank line
+// store. S1 toggles diagnostics; S2 steps the converter clock's rotation (used
+// only with the calibration off). Default output is the decoded image.
 
 module top_ntsc_hdmi #(
-    parameter [2:0] DEFAULT_PHASE = 3'd2,
+    parameter [3:0] DEFAULT_PHASE = 4'd0,   // rotation, with calibration off
     parameter       HUNT_PHASE    = 1'b0,
     parameter       SCOPE_ONLY    = 1'b0,
     parameter       FRAME_ALIGN   = 1'b1,
@@ -22,7 +24,9 @@ module top_ntsc_hdmi #(
     // captured frame back into the samples, for replay through the decoder in
     // simulation.  The serial link on this board has never been dependable;
     // the HDMI output always has.
-    parameter         TAPE        = 1'b0
+    parameter         TAPE        = 1'b0,
+    // adc_front's counting window, 2^ADC_WIN_W samples.  Benches shorten it.
+    parameter integer ADC_WIN_W   = 14
 ) (
     input  wire       clk27,
 
@@ -66,13 +70,6 @@ module top_ntsc_hdmi #(
         else if (lock_filter == 12'd0) vid_lock_stable <= 1'b0;
     end
 
-    reg [3:0] cap_reset_pipe = 4'b0000;
-    always @(posedge serial_clk) begin
-        if (!vid_lock_stable) cap_reset_pipe <= 4'b0000;
-        else                  cap_reset_pipe <= {cap_reset_pipe[2:0], 1'b1};
-    end
-    wire cap_rst_n = cap_reset_pipe[3];
-
     reg [3:0] vid_reset_pipe = 4'b0000;
     always @(posedge pixel_clk) begin
         if (!vid_lock_stable) vid_reset_pipe <= 4'b0000;
@@ -105,13 +102,14 @@ module top_ntsc_hdmi #(
     reg [1:0]  btn_meta, btn_sync, btn_stable;
     reg [19:0] btn_timer;
     reg [21:0] btn_inhibit;
-    reg [2:0]  phase_sel;
-    wire [2:0] phase_used;   // what the capture actually samples with
+    reg [3:0]  phase_sel;    // converter clock rotation, 0..9
+    wire [3:0] phase_used;   // the rotation in use
+    wire       adc_cal_done;
     reg [1:0]  gain_sel;
     reg        scope_only;
     reg [26:0] hunt_cnt;
-    always @(posedge serial_clk or negedge cap_rst_n) begin
-        if (!cap_rst_n) begin
+    always @(posedge pixel_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n) begin
             btn_meta <= 2'b11; btn_sync <= 2'b11; btn_stable <= 2'b11;
             btn_timer <= 20'd0; phase_sel <= DEFAULT_PHASE; gain_sel <= 2'd0;
             scope_only <= SCOPE_ONLY;
@@ -121,9 +119,9 @@ module top_ntsc_hdmi #(
                 hunt_cnt <= 27'd0;
             end else if (!HUNT_PHASE || lock_level >= 8'd16) begin
                 hunt_cnt <= 27'd0;
-            end else if (hunt_cnt == 27'd125_999_999) begin   // 1 s per phase
+            end else if (hunt_cnt == 27'd25_199_999) begin    // 1 s per rotation
                 hunt_cnt  <= 27'd0;
-                phase_sel <= (phase_sel == 3'd4) ? 3'd0 : phase_sel + 3'd1;
+                phase_sel <= (phase_sel == 4'd9) ? 4'd0 : phase_sel + 4'd1;
             end else begin
                 hunt_cnt <= hunt_cnt + 27'd1;
             end
@@ -135,7 +133,7 @@ module top_ntsc_hdmi #(
                     btn_timer <= 20'd0;
                     if (btn_inhibit == 22'h3FFFFF) begin
                         if (btn_stable[1] && !btn_sync[1])
-                            phase_sel <= (phase_sel == 3'd4) ? 3'd0 : phase_sel + 3'd1;
+                            phase_sel <= (phase_sel == 4'd9) ? 4'd0 : phase_sel + 4'd1;
                         if (btn_stable[0] && !btn_sync[0])
                             scope_only <= ~scope_only;
                     end
@@ -155,11 +153,13 @@ module top_ntsc_hdmi #(
                    .SCOPE_FREERUN(SCOPE_FREERUN),
                    // A tape is recorded once and held: re-recording while it
                    // is on screen would mix two recordings in one frame.
-                   .DUMP_AW(DUMP_AW), .SCOPE_LIVE(!TAPE)) capture (
-        .clk_cap(serial_clk), .rst_n(cap_rst_n),
+                   .DUMP_AW(DUMP_AW), .SCOPE_LIVE(!TAPE),
+                   .ADC_WIN_W(ADC_WIN_W)) capture (
+        .clk(pixel_clk), .fclk(serial_clk), .rst_n(vid_rst_n),
         .adc_d(adc_d), .adc_otr(adc_otr),
         .adc_clk(adc_clk), .adc_clamp(adc_clamp),
-        .phase_sel(phase_sel), .phase_in_use(phase_used), .gain_sel(gain_sel),
+        .rot_sel(phase_sel), .rot_in_use(phase_used), .adc_cal_done(adc_cal_done),
+        .gain_sel(gain_sel),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_bank(wr_bank),
         .line_done(line_done), .vsync_pulse(vsync_pulse),
         .sync_locked(sync_locked), .period_out(line_period),
@@ -178,8 +178,8 @@ module top_ntsc_hdmi #(
     );
 
     reg vs_toggle;
-    always @(posedge serial_clk or negedge cap_rst_n) begin
-        if (!cap_rst_n)        vs_toggle <= 1'b0;
+    always @(posedge pixel_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n)        vs_toggle <= 1'b0;
         else if (vsync_pulse)  vs_toggle <= ~vs_toggle;
     end
 
@@ -245,7 +245,7 @@ module top_ntsc_hdmi #(
     wire pixel_valid;
 
     video_line_store linebuf (
-        .wr_clk(serial_clk), .wr_reset_n(cap_rst_n), .wr_en(wr_en),
+        .wr_clk(pixel_clk), .wr_reset_n(vid_rst_n), .wr_en(wr_en),
         .wr_x(wr_addr[9:0]), .wr_data(wr_data), .wr_done(line_done),
         .rd_clk(pixel_clk), .rd_reset_n(vid_rst_n), .rd_line_end(line_end),
         .rd_x(x[9:0]), .rd_data(pixel_rgb), .rd_valid(pixel_valid)
@@ -281,7 +281,7 @@ module top_ntsc_hdmi #(
     wire [DUMP_AW-1:0] scope_addr_w = scope_addr;   // zero-extended
 
     line_buffer #(.ADDR_WIDTH(DUMP_AW), .DATA_WIDTH(8)) dumpbuf (
-        .wr_clk(serial_clk), .wr_en(dmp_we), .wr_addr(dmp_addr),
+        .wr_clk(pixel_clk), .wr_en(dmp_we), .wr_addr(dmp_addr),
         .wr_data(dmp_data),
         .rd_clk(pixel_clk),
         .rd_addr(TAPE ? tape_addr[DUMP_AW-1:0] : scope_addr_w),
@@ -364,8 +364,8 @@ module top_ntsc_hdmi #(
                     (x >= 11'd511) && (x < 11'd514);
     wire [10:0] ph_slot  = x / 11'd24;
     wire        on_phase = (y_d >= 11'd84) && (y_d < 11'd96) &&
-                           (x < 11'd120) && (x % 11'd24 < 11'd20);
-    wire        ph_here  = (ph_slot == {8'd0, phase_used});
+                           (x < 11'd240) && (x % 11'd24 < 11'd20);
+    wire        ph_here  = (ph_slot == {7'd0, phase_used});
     wire [20:0] qc_scaled = (({5'd0, qc_rate} << 2) + {5'd0, qc_rate}) >> 6;
     wire on_qual = (y_d >= 11'd100) && (y_d < 11'd108) &&
                    (x < (qc_scaled > 21'd640 ? 11'd640 : qc_scaled[10:0]));
@@ -409,8 +409,8 @@ module top_ntsc_hdmi #(
     always @(posedge clk27) hb <= hb + 26'd1;
 
     reg field_seen;
-    always @(posedge serial_clk or negedge cap_rst_n) begin
-        if (!cap_rst_n)       field_seen <= 1'b0;
+    always @(posedge pixel_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n)       field_seen <= 1'b0;
         else if (vsync_pulse) field_seen <= 1'b1;
     end
 
@@ -424,7 +424,9 @@ module top_ntsc_hdmi #(
     // Machine-readable scope identity and liveness. A capture card may replay
     // an older image after programming; changing PNG hashes alone cannot tell
     // whether that image belongs to the requested diagnostic mode.
-    // 32 cells, 16 pixels each, MSB first: A5, mode/phase/reserved, frame, 01.
+    // 32 cells, 16 pixels each, MSB first: A5, mode/rotation, frame, 02.
+    // Version 2: the rotation is four bits where version 1 had a three-bit
+    // phase and a reserved zero; scripts/scope_trace.py reads both.
     // Kept above the full-range trace (y >= 224), below the existing bars.
     reg [7:0] scope_frame = 8'd0;
     always @(posedge pixel_clk) begin
@@ -432,7 +434,7 @@ module top_ntsc_hdmi #(
         else if (x == 0 && y == 0) scope_frame <= scope_frame + 8'd1;
     end
     wire [31:0] scope_identity = {8'hA5, SCOPE_TEST_RAMP[3:0], phase_used,
-                                  1'b0, scope_frame, 8'h01};
+                                  scope_frame, 8'h02};
     wire on_scope_id = SCOPE_FULL_RANGE && y_d >= 11'd200 && y_d < 11'd208 && x < 11'd512;
     wire scope_id_bit = scope_identity[31-x[8:4]];
     wire [7:0] scope_id_rgb = scope_id_bit ? 8'hFF : 8'h00;

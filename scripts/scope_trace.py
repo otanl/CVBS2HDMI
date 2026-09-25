@@ -30,7 +30,7 @@ import subprocess
 def scope_identity(data, width=640, height=480):
     """Read the full-range scope's mode/phase/frame header, or None.
 
-    Version 1 occupies y=200..207, 32 monochrome cells of 16 pixels each.
+    Both versions occupy y=200..207, 32 monochrome cells of 16 pixels each.
     Sample cell centres to tolerate HDMI 4:2:2 filtering and pixel latency.
     """
     if (width, height) != (640, 480) or len(data) != width*height*3:
@@ -43,10 +43,17 @@ def scope_identity(data, width=640, height=480):
         if 70 < level < 180:
             return None
         word = (word << 1) | (level >= 180)
-    if word >> 24 != 0xA5 or word & 0xFF != 1 or word & (1 << 16):
+    if word >> 24 != 0xA5:
         return None
-    return dict(mode=(word >> 20) & 15, phase=(word >> 17) & 7,
-                frame=(word >> 8) & 255, version=1)
+    if word & 0xFF == 1 and not word & (1 << 16):
+        # Version 1: a three-bit read phase of five, then a reserved zero.
+        return dict(mode=(word >> 20) & 15, phase=(word >> 17) & 7,
+                    frame=(word >> 8) & 255, version=1)
+    if word & 0xFF == 2:
+        # Version 2: the converter clock's rotation, four bits, 0..9.
+        return dict(mode=(word >> 20) & 15, phase=(word >> 16) & 15,
+                    frame=(word >> 8) & 255, version=2)
+    return None
 
 
 def extract_trace(data, width=640, height=480, legacy_scale=False):

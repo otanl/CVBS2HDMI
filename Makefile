@@ -192,7 +192,7 @@ sim: | $(BUILD_STAMP)
 # from the command line, e.g.
 #   make sim-capture SIMARGS="-Pntsc_capture_tb.Q_QUALIFY=110"
 SIMARGS ?=
-CAPTURE_SIM_RTL := src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v
+CAPTURE_SIM_RTL := src/ntsc_capture.v src/adc_front.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v
 sim-capture: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s ntsc_capture_tb -o build/ntsc_capture_tb $(SIMARGS) \
 		$(CAPTURE_SIM_RTL) sim/ntsc_capture_tb.v
@@ -297,7 +297,7 @@ hdmi640-program: $(HDMI640_BITSTREAM)
 
 # --- NTSC-J in, colour 640x480p HDMI out ---------------------------------
 NTSC_TOP       := top_ntsc_hdmi
-NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/line_buffer.v \
+NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/adc_front.v src/line_buffer.v \
                   src/video_line_store.v src/chroma_sincos.v \
                   src/sync_lpf.v src/burst_nco.v src/cordic_atan.v \
                   src/video_timing.v src/hdmi_out.v src/tmds_encoder.v \
@@ -319,8 +319,14 @@ $(NTSC_CST): $(PROBE_CONSTRAINTS) $(HDMI_CONSTRAINTS) | $(BUILD_STAMP)
 # -nodsp: the luma gain multiply otherwise lands in a MULT9X9 that Apicula
 # cannot pack (KeyError 'IRBY_IREG0BL_0').  It is a multiply by a constant, so
 # LUT logic is the right implementation anyway.
+# -noalu: no ALU carry cells at all.  Designs with a few thousand of them
+# compute wrongly on this part depending on placement (Apicula #514, open), and
+# this one had about 4300.  LUT adders are slower, which is why the decoder
+# moved from 126 MHz to the 25.2 MHz pixel clock: at one sample per clock it
+# has five times the time per operation.
+NTSC_SYNTH := synth_gowin -nodsp -noalu
 $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
@@ -370,7 +376,7 @@ NTSC_LEGACY_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_legacy.fs
 ntsc-legacy: $(NTSC_LEGACY_BITSTREAM)
 
 $(NTSC_LEGACY_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 1 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 1 $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 $(NTSC_LEGACY_PNR): $(NTSC_LEGACY_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -396,7 +402,7 @@ NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NT
 ntsc-scope: $(NTSC_SCOPE_BITSTREAM)
 
 $(NTSC_SCOPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) -set SCOPE_FREERUN $(NTSC_SCOPE_FREERUN) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) -set SCOPE_FREERUN $(NTSC_SCOPE_FREERUN) $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 $(NTSC_SCOPE_PNR): $(NTSC_SCOPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -419,7 +425,7 @@ NTSC_TAPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_tape.fs
 ntsc-tape: $(NTSC_TAPE_BITSTREAM)
 
 $(NTSC_TAPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set TAPE 1 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set TAPE 1 $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 $(NTSC_TAPE_PNR): $(NTSC_TAPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \

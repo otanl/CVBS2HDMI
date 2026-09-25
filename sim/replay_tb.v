@@ -16,50 +16,51 @@
 // board's HDMI captures, so a change can be judged here before it is built.
 module replay_tb;
     parameter integer THR_SHIFT = 4;    // the module default for standard timing
-    parameter         AUTO = 1'b1;      // AUTO_PHASE
-    // A converter's output switching window.  0 keeps the old model: the new
-    // sample appears on the edge that sees adc_clk rise, settled.  1..4: it
-    // appears that many clocks later, and with MIX the clock before that
-    // carries half its bits switched -- what a read inside the window gets.
-    parameter integer ADC_DELAY = 0;
-    parameter integer MIX = 0;
+    parameter         AUTO = 1'b1;      // AUTO_PHASE: calibrate the converter clock
+    parameter integer ROT  = 0;         // rotation with AUTO off
+    // The converter: each code appears TOD_NS after adc_clk rises, preceded by
+    // SWITCH_NS of random bits -- what a read inside the output switching
+    // window gets.  With AUTO the calibration must find a clean read anyway;
+    // with AUTO off and ROT placing a read in the window, it must not.
+    parameter real    TOD_NS    = 10.0;
+    parameter real    SWITCH_NS = 0.0;
     reg [7:0] stim [0:65535];
     integer nsamp, lines_to_run, fd, idx = 0, lines = 0, i;
     reg [1023:0] stim_path, out_path;
 
-    reg clk = 1'b0;
-    always #3.968 clk = ~clk;          // 126 MHz
+    // 126 MHz and the pixel clock divided from it, as on the board.
+    reg fclk = 1'b0;
+    always #3.968 fclk = ~fclk;
+    wire clk;
+    CLKDIV #(.DIV_MODE("5")) u_div (.CLKOUT(clk), .HCLKIN(fclk), .RESETN(1'b1), .CALIB(1'b0));
     reg        rst_n = 1'b0;
     reg [7:0]  adc_d = 8'd0;
     wire       adc_clk;
 
-    reg adc_clk_d = 1'b0;
-    reg [2:0] since = 3'd7;            // clocks since adc_clk rose; 7 idle
-    reg [7:0] newv = 8'd0;
-    always @(posedge clk) begin
-        adc_clk_d <= adc_clk;
-        if (adc_clk && !adc_clk_d) begin
-            newv  <= stim[idx];
-            idx   <= (idx == nsamp-1) ? 0 : idx + 1;
-            since <= 3'd1;
-            if (ADC_DELAY == 0) adc_d <= stim[idx];
-            else if (MIX && ADC_DELAY == 1)
-                adc_d <= (adc_d & 8'hAA) | (stim[idx] & 8'h55);
-        end else if (since != 3'd7) begin
-            since <= (since == 3'd4) ? 3'd7 : since + 3'd1;
-            if (ADC_DELAY != 0 && since == ADC_DELAY) adc_d <= newv;
-            else if (MIX && since == ADC_DELAY - 1)
-                adc_d <= (adc_d & 8'hAA) | (newv & 8'h55);
+    task automatic convert(input [7:0] code);
+        begin
+            if (SWITCH_NS > 0.0) begin
+                #(TOD_NS - SWITCH_NS/2.0);
+                repeat ($rtoi(SWITCH_NS * 2.0)) begin adc_d = $random; #0.5; end
+            end else
+                #(TOD_NS);
+            adc_d = code;
         end
+    endtask
+    always @(posedge adc_clk) begin
+        fork
+            convert(stim[idx]);
+        join_none
+        idx <= (idx == nsamp-1) ? 0 : idx + 1;
     end
 
     wire        wr_en, line_done;
     wire [10:0] wr_addr;
     wire [23:0] wr_data;
     wire [7:0]  black;
-    ntsc_capture #(.THR_SHIFT(THR_SHIFT), .AUTO_PHASE(AUTO)) dut (
-        .clk_cap(clk), .rst_n(rst_n), .adc_d(adc_d), .adc_otr(1'b0),
-        .adc_clk(adc_clk), .adc_clamp(), .phase_sel(3'd2), .gain_sel(2'd0),
+    ntsc_capture #(.THR_SHIFT(THR_SHIFT), .AUTO_PHASE(AUTO), .ADC_WIN_W(10)) dut (
+        .clk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_otr(1'b0),
+        .adc_clk(adc_clk), .adc_clamp(), .rot_sel(ROT[3:0]), .gain_sel(2'd0),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_bank(),
         .line_done(line_done), .vsync_pulse(), .sync_locked(),
         .black_out(black), .dmp_ack(1'b0)
@@ -87,7 +88,7 @@ module replay_tb;
         if (!$value$plusargs("lines=%d", lines_to_run)) lines_to_run = 300;
         $readmemh(stim_path, stim, 0, nsamp-1);
         fd = $fopen(out_path, "w");
-        repeat (10) @(posedge clk);
+        repeat (100) @(posedge fclk);
         rst_n = 1'b1;
         wait (lines >= lines_to_run);
         $fclose(fd);

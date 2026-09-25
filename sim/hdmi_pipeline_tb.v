@@ -29,13 +29,13 @@ module hdmi_pipeline_tb;
     end
     initial begin
         repeat(6000) @(negedge dut.serial_clk);
-        if (dut.cap_rst_n !== 1 || dut.vid_rst_n !== 1)
+        if (dut.vid_rst_n !== 1)
             $fatal(1,"PLL/reset never initialised");
         force dut.vid_lock=0;
         @(negedge dut.serial_clk);
         release dut.vid_lock;
         repeat(10) @(negedge dut.serial_clk);
-        if (dut.cap_rst_n !== 1 || dut.vid_rst_n !== 1)
+        if (dut.vid_rst_n !== 1)
             $fatal(1,"single-cycle lock glitch reset HDMI");
         // Start immediately before x=0/y=0, after initial partial frame.
         wait(dut.x==800 && dut.y==524);
