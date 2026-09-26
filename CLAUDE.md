@@ -1350,8 +1350,9 @@ goes through `scripts/gowin_pack_io.py`.  `CAL_MASK` is kept: the top bank
 alone still locates the switching, and the choice within the quiet run already
 counts all eight bits.
 
-**The strip.**  The bottom eight rows of the picture carry the interface's
-state as two 32-bit words, 16-pixel cells, white = 1 (`ADC_STRIP`): rotation,
+**The strip.**  The bottom rows of the diagnostic view -- S1, or the view
+`make ntsc-scope` starts in; every frame of `ntsc-adcdiag` -- carry the
+interface's state as 32-bit words, 16-pixel cells, white = 1 (`ADC_STRIP`): rotation,
 calibrated, pair, sweeps so far, the last tracking window's disagreement
 count, and one rotation's sweep counts per frame.  `scripts/adc_strip.py`
 reads it from captures.  **Sweeps must stay at 1 and track at 0**; anything

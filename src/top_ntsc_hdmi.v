@@ -556,11 +556,12 @@ module top_ntsc_hdmi #(
                          : 4'd0;
     wire [7:0]  tape_grey;   // 16 + 14 * nibble; see g_tape_grey at the end
 
-    // The converter interface's state, always on, in the bottom four rows:
-    // 32 cells of 16 pixels, MSB first, white = 1, the same encoding as the
-    // scope identity.  A, rotation, calibrated, pair (x = 1), sweeps so far,
-    // and the last tracking window's difference count -- near zero when the
-    // read is clean.  Readable off any capture without a button or the UART.
+    // The converter interface's state, in the bottom four rows of the
+    // diagnostic view (S1; the view ntsc-scope starts in) and of every
+    // ADC_DIAG frame, kept off the picture itself: 32 cells of 16 pixels, MSB
+    // first, white = 1, the same encoding as the scope identity.  A, rotation,
+    // calibrated, pair (x = 1), sweeps so far, and the last tracking window's
+    // difference count -- near zero when the read is clean.
     wire [31:0] adc_word = {4'hA, phase_used, adc_cal_done, adc_pair_x,
                             adc_sweeps, adc_track};
     // Above it, the last sweep's two counts for one rotation, a different
@@ -574,8 +575,8 @@ module top_ntsc_hdmi #(
     // (15 bits), whether it was fresh, and the tracked angle (16 bits).
     wire [31:0] adc_word3 = {dbg_line_i, dbg_line_q};
     wire [31:0] adc_word4 = {dbg_line_angle[31:17], dbg_line_fresh, dbg_line_off[31:16]};
-    wire on_adc_word = ADC_STRIP && !TAPE && y_d >= 11'd464 && y_d < 11'd480 &&
-                       x < 11'd512;
+    wire on_adc_word = ADC_STRIP && !TAPE && (scope_sync || ADC_DIAG) &&
+                       y_d >= 11'd464 && y_d < 11'd480 && x < 11'd512;
     wire [31:0] adc_show = (y_d >= 11'd476) ? adc_word
                          : (y_d >= 11'd472) ? adc_word2
                          : (y_d >= 11'd468) ? adc_word4 : adc_word3;

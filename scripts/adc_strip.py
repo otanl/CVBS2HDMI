@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Read the converter interface's state off captured HDMI frames.
 
-The decoder draws a 32-bit word in the bottom four rows of the picture
-(y = 476..479), 32 cells of 16 pixels, most significant bit first, white = 1:
+The decoder draws a 32-bit word in the bottom four rows of the diagnostic
+view -- press S1, or load `make ntsc-scope`, which starts there; the normal
+picture does not carry it -- (y = 476..479), 32 cells of 16 pixels, most
+significant bit first, white = 1:
 
     A (4 bits) | rotation (4) | calibrated | pair x | sweeps (6) | track count (16)
 
