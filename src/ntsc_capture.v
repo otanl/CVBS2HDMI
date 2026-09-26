@@ -101,6 +101,10 @@ module ntsc_capture #(
     output wire        adc_clamp,
 
     input  wire [3:0]  rot_sel,       // converter clock rotation, AUTO_PHASE off
+    // Glitch effects, a byte each, 0 = off -- top_ntsc_hdmi drives them from
+    // the Unit 8Angle's knobs.  Each one breaks a stage of this decoder rather
+    // than processing its picture; see the fx_* wires below.
+    input  wire [63:0] fx,
     output wire [3:0]  rot_in_use,
     output wire        adc_cal_done,
     output wire [5:0]  adc_sweeps,
@@ -168,16 +172,39 @@ module ntsc_capture #(
     assign adc_dbg_by = adc_dbg_by_w;
     assign adc_dbg_cx = adc_dbg_cx_w;
     assign adc_dbg_cy = adc_dbg_cy_w;
+    // ---- glitch effects -----------------------------------------------------
+    // All zero is the decoder exactly as it is without them.
+    wire [7:0] fx_slice = fx[7:0];     // sync slicer set higher: picture reads as sync
+    wire [7:0] fx_hhold = fx[15:8];    // real syncs ignored, flywheel detuned
+    //         fx[23:16] rolls the output frame against the field (top_ntsc_hdmi)
+    wire [7:0] fx_nco   = fx[31:24];   // subcarrier reference off frequency
+    wire [7:0] fx_yc    = fx[39:32];   // luma filter opened: Y/C separation lost
+    wire [7:0] fx_adc   = fx[47:40];   // converter clock off its calibrated phase
+    wire [7:0] fx_black = fx[55:48];   // black measured inside the picture
+    wire [7:0] fx_hold  = fx[63:56];   // lines left unpublished: the store repeats
+    reg  [31:0] fx_rng = 32'h1D87_2A93;
+    always @(posedge clk) fx_rng <= {fx_rng[30:0], fx_rng[31] ^ fx_rng[21] ^ fx_rng[1] ^ fx_rng[0]};
+    // fx_nco: a phase ramp added to the burst-locked reference, as if the colour
+    // oscillator ran up to 23 kHz off.  The per-line burst correction measures
+    // the NCO, not this, so the hue turns along every line and on from line to
+    // line: diagonal rainbow bands.  Zero clears it at once.
+    reg  [31:0] fx_phase = 32'd0;
+    always @(posedge clk) fx_phase <= (fx_nco == 8'd0) ? 32'd0 : fx_phase + {10'd0, fx_nco, 14'd0};
+    // Converter clock: 1..9 tenths of a conversion off the calibrated rotation.
+    wire [10:0] fx_adc9  = {3'd0, fx_adc} + {fx_adc, 3'd0};
+    wire [3:0]  fx_rot   = (fx_adc == 8'd0) ? 4'd0 : fx_adc9[10:8] + 4'd1;
+
     adc_front #(.AUTO(AUTO_PHASE), .WIN_W(ADC_WIN_W), .CLK_D1_FIRST(ADC_CLK_SWAP),
                 .DIAG(ADC_DIAG)) u_adc (
         .pclk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_clk(adc_clk),
-        .manual_rot(rot_sel), .sample(adc_r), .rot_in_use(rot_in_use),
+        .manual_rot(rot_sel), .rot_skew(fx_rot), .sample(adc_r), .rot_in_use(rot_in_use),
         .cal_done(adc_cal_done), .sweeps(adc_sweeps), .pair_x(adc_pair_x),
         .track_count(adc_track_w),
         .dbg_rot(adc_dbg_rot), .dbg_cx(adc_dbg_cx_w), .dbg_cy(adc_dbg_cy_w),
         .dbg_bit(adc_dbg_bit), .dbg_bx(adc_dbg_bx_w), .dbg_by(adc_dbg_by_w)
     );
     always @(posedge clk) otr_r <= adc_otr;   // a diagnostic only
+
 
     // One sample every clock.  The name stays so the code still says which
     // logic runs per sample; it used to be one clock in five at 126 MHz.
@@ -239,8 +266,12 @@ module ntsc_capture #(
     localparam integer GLITCH  = 0;
     // Qualify the complete pulse. Equalising pulses are too short; vertical
     // broad pulses are too long. This prevents half-line false H syncs.
+    // With fx_slice up, the low run is blanking plus whatever dark picture
+    // joins it, far past 150; taking it anyway starts the line where the dark
+    // ends, so the picture itself decides where every line begins.
     wire sync_qual = LEGACY_TIMING ? (below && (lowrun == QUALIFY))
-                    : (!below && below_d && lowrun >= QUALIFY && lowrun <= 150);
+                    : (!below && below_d && lowrun >= QUALIFY &&
+                       (lowrun <= 150 || fx_slice != 8'd0));
 
     reg  [7:0] sl_d [0:3];
     reg  [7:0] drop_track, drop_ref;
@@ -322,7 +353,7 @@ module ntsc_capture #(
             period_error <= $signed({1'b0, rcnt_ahead, 8'd0}) -
                             $signed({1'b0, period_avg, pfrac});
             free_period <= period_avg + {15'd0, extra} +
-                           ((lag == 0) ? FMARGIN[15:0] : 16'd0);
+                           ((lag == 0) ? FMARGIN[15:0] : 16'd0) + {10'd0, fx_hhold[7:2]};
             window_start <= period_avg - win_w;
         end
     end
@@ -349,7 +380,13 @@ module ntsc_capture #(
     // Rejecting it left the standard-timing path coasting indefinitely: sync
     // never locked and only 89% of lines were accepted.  Accepting it resyncs.
     wire       late_real   = !LEGACY_TIMING && (force_run != 8'd0) && in_late_window;
-    wire       line_real   = sync_qual && (in_window || acquiring || vertical_reacquire || late_real);
+    // fx_hhold: a real sync is thrown away with probability fx_hhold/256, and
+    // the flywheel and the free-running starts run up to 59 samples long --
+    // horizontal hold lost, the picture torn and slanted, the burst gate on
+    // the wrong part of the line.
+    wire       hh_drop     = (fx_hhold != 8'd0) && (fx_rng[7:0] < fx_hhold);
+    wire       line_real   = sync_qual && !hh_drop &&
+                             (in_window || acquiring || vertical_reacquire || late_real);
     wire       line_edge   = line_real || (force_line && !acquiring);
 
     wire [7:0] span      = f_max - f_min;
@@ -358,6 +395,12 @@ module ntsc_capture #(
 
     reg  [7:0]  black;
     wire [7:0] thr_off   = span_off;                 // high: detection
+    // fx_slice: the slice from just above black (4 codes) to just under peak
+    // white, in proportion -- anywhere between, dark picture reads as sync.
+    wire [7:0]  sl_room  = (f_max > black) ? (f_max - black) : 8'd0;
+    wire [15:0] sl_prod  = sl_room * fx_slice;
+    wire [8:0]  thr_sum  = (fx_slice == 8'd0) ? ({1'b0, f_min} + {1'b0, thr_off})
+                         : ({1'b0, black} + {1'b0, sl_prod[15:8]} + 9'd4);
     wire [7:0] lo_raw    = span >> THR_SHIFT_LO;
     wire [7:0] thr_lo_off= (lo_raw < 8'd2) ? 8'd2 : lo_raw;
 
@@ -429,7 +472,10 @@ module ntsc_capture #(
 
     wire [11:0] cpos      = ccnt + lag;
     wire        in_burst  = (cpos >= BURST_START) && (cpos < BURST_END);
-    wire        in_bp     = (cpos >= BP_START) && (cpos < BP_END);
+    // fx_black moves the back porch window up to 478 samples into the picture
+    // and takes black from it raw, so every line's black follows its content.
+    wire [11:0] bp_shift  = {3'd0, fx_black, 1'b0};
+    wire        in_bp     = (cpos >= BP_START + bp_shift) && (cpos < BP_END + bp_shift);
     wire        in_active = (cpos >= ACTIVE_START) &&
                             (cpos <  ACTIVE_START + 2 * ACTIVE_PIXELS);
     // The colour pipeline -- mixer, moving sum, gain and matrix -- delivers
@@ -451,7 +497,14 @@ module ntsc_capture #(
     // neither biases the back porch upward nor wraps at ADC code 255.
     wire [16:0] s7x73 = ({6'd0, sum7} << 6) + ({6'd0, sum7} << 3) +
                         {6'd0, sum7} + 17'd256;
-    wire [7:0] luma_lp = s7x73[16:9];
+    wire [7:0] luma_lp0 = s7x73[16:9];
+    // fx_yc blends luma from the boxcar towards the raw sample: the subcarrier
+    // leaks into luma as a fine crawl and chroma, the sample less luma, fades.
+    wire signed [8:0]  yc_hp   = $signed({1'b0, dl[3]}) - $signed({1'b0, luma_lp0});
+    wire signed [17:0] yc_prod = yc_hp * $signed({1'b0, fx_yc});
+    wire signed [9:0]  yc_add  = yc_prod[17:8];
+    wire signed [10:0] yc_luma = $signed({3'b0, luma_lp0}) + yc_add;
+    wire [7:0] luma_lp = yc_luma[10] ? 8'd0 : (yc_luma[9:8] != 2'b00) ? 8'hFF : yc_luma[7:0];
     reg [31:0] ref_delay [0:3];
     reg [7:0] y_delay [0:5];
     reg signed [20:0] u_delay [0:6], v_delay [0:6];
@@ -656,7 +709,7 @@ module ntsc_capture #(
                 for (di = 1; di < 7; di = di + 1) dl[di] <= dl[di-1];
                 sum7 <= sum7 + {3'd0, adc_r} - {3'd0, dl[6]};
 
-                ref_delay[0] <= nco_ref;
+                ref_delay[0] <= nco_ref + fx_phase;
                 y_delay[0] <= luma_lp;
                 for (di = 1; di < 4; di = di + 1) ref_delay[di] <= ref_delay[di-1];
                 for (di = 1; di < 6; di = di + 1) y_delay[di] <= y_delay[di-1];
@@ -810,7 +863,7 @@ module ntsc_capture #(
                 else if (fast_cnt[RELEASE-1:0] == {RELEASE{1'b1}} && f_max != 8'h00)
                     f_max <= f_max - 8'd1;
 
-                thr      <= f_min + thr_off;
+                thr      <= thr_sum[8] ? 8'hFF : thr_sum[7:0];
                 thr_lo   <= f_min + thr_lo_off;
                 fast_cnt <= fast_cnt + 11'd1;
 
@@ -831,19 +884,21 @@ module ntsc_capture #(
                     ccnt <= LEGACY_TIMING ? 12'd0 :
                             (line_real ? lowrun + LPF_DELAY + 1 : ccnt_real);
                     if (line_real) ccnt_real <= lowrun + LPF_DELAY + 1;
-                end else if (FREE_RUN && acquiring && ccnt == FREE_AT[11:0]) begin
+                end else if (FREE_RUN && acquiring && ccnt == FREE_AT[11:0] + {6'd0, fx_hhold[7:2]}) begin
                     ccnt <= FREE_TO[11:0];
                     lag  <= 12'd0;   // a forced run's lag would shift the window
                 end else if (ccnt != 12'hFFF) begin
                     ccnt <= ccnt + 12'd1;
                 end
 
-                if (cpos == BP_START - 1) begin
+                if (cpos == BP_START - 1 + bp_shift) begin
                     bp_acc <= 13'd0;
                 end else if (in_bp) begin
                     bp_acc <= bp_acc + {5'd0, adc_r};
-                end else if (cpos == BP_END) begin
-                    if (LEGACY_TIMING) begin
+                end else if (cpos == BP_END + bp_shift) begin
+                    if (fx_black != 8'd0) begin
+                        black <= LEGACY_TIMING ? bp_acc[12:5] : bp_val;
+                    end else if (LEGACY_TIMING) begin
                         black <= bp_acc[12:5];        // 32-sample average
                     end else begin
                         // max(front porch, back porch), then black_q is black
@@ -865,8 +920,13 @@ module ntsc_capture #(
                             // Publish only after every pixel was written.
                             // Sync detection and free-running position wrap
                             // must never announce a partially filled bank.
-                            wr_bank <= ~wr_bank;
-                            line_done <= 1'b1;
+                            // fx_hold: withheld with probability fx_hold/256;
+                            // the next line overwrites this bank and the store
+                            // keeps showing the last one it published.
+                            if (!(fx_hold != 8'd0 && fx_rng[15:8] < fx_hold)) begin
+                                wr_bank <= ~wr_bank;
+                                line_done <= 1'b1;
+                            end
                         end
                     end
                 end

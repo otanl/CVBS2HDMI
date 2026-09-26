@@ -493,8 +493,8 @@ check-tools:
 	@$(TOOL) openFPGALoader --version >/dev/null
 	@echo "All required tools are available."
 
-.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-angle8 sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-angle8 sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
+.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-freerun sim-angle8 sim-hdmi test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-freerun sim-angle8 sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -600,6 +600,31 @@ sim-video-late: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s ntsc_video_tb -Pntsc_video_tb.HSHIFT=24 -Pntsc_video_tb.FIELDS=1 \
 		-o $(BUILD_DIR)/ntsc_video_late_tb $(CAPTURE_SIM_RTL) sim/ntsc_video_tb.v
 	$(TOOL) vvp $(BUILD_DIR)/ntsc_video_late_tb
+
+# The glitch effects (ntsc_capture's fx): each applied for 50 lines of the
+# colour-bar video must visibly break it -- wrong colours, or for the line
+# hold, lines left unpublished -- and once removed the picture must decode to
+# the published bar values again, exactly as sim-video.  The converter-clock
+# skew cannot show against a model with no switching window, so it is checked
+# for recovery only.  The eight runs go in parallel.
+GLITCH_RUNS := "all 64'hC8C8C8C8C8C8C8C8 1000 1000000" \
+	"slice 64'h0000000000000050 1000 1000000" \
+	"hhold 64'h000000000000C800 1000 1000000" \
+	"nco 64'h00000000C8000000 1000 1000000" \
+	"yc 64'h000000C800000000 1000 1000000" \
+	"adc 64'h0000C80000000000 0 1000000" \
+	"black 64'h00C8000000000000 1000 1000000" \
+	"hold 64'hC800000000000000 0 20"
+sim-video-glitch: | $(BUILD_STAMP)
+	@pids=""; for run in $(GLITCH_RUNS); do set -- $$run; \
+		( $(TOOL) iverilog -g2012 -s ntsc_video_tb -Pntsc_video_tb.FIELDS=2 "-Pntsc_video_tb.FX=$$2" \
+			-Pntsc_video_tb.FX_FROM=168210 -Pntsc_video_tb.FX_TO=248310 \
+			-Pntsc_video_tb.FX_MIN_BAD=$$3 -Pntsc_video_tb.FX_MAX_LINES=$$4 \
+			-o $(BUILD_DIR)/ntsc_glitch_$$1_tb $(CAPTURE_SIM_RTL) sim/ntsc_video_tb.v || exit 1; \
+		  $(TOOL) vvp $(BUILD_DIR)/ntsc_glitch_$$1_tb > $(BUILD_DIR)/ntsc_glitch_$$1.log 2>&1; s=$$?; \
+		  echo "$$1: `grep -hE 'glitch:|RESULT|FATAL' $(BUILD_DIR)/ntsc_glitch_$$1.log | tr '\n' ' '`"; exit $$s ) & \
+		pids="$$pids $$!"; \
+	done; st=0; for p in $$pids; do wait $$p || st=1; done; exit $$st
 
 # A broken input is shown as noise, not a black screen or a frozen line, and a
 # real signal still locks as fast.  FREE_RUN=0 is the negative control: the

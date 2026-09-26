@@ -70,7 +70,7 @@ module ntsc_capture_tb;
         .clk(clk), .fclk(fclk), .rst_n(rst_n),
         .adc_d(adc_d), .adc_otr(1'b0),
         .adc_clk(adc_clk), .adc_clamp(),
-        .rot_sel(4'd0), .gain_sel(2'd0),
+        .rot_sel(4'd0), .fx(64'd0), .gain_sel(2'd0),
         .wr_en(), .wr_addr(), .wr_data(), .wr_bank(),
         .line_done(), .vsync_pulse(vsync_pulse),
         .sync_locked(sync_locked), .lock_level(lock_level),

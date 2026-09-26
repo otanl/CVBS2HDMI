@@ -17,7 +17,7 @@ module scope_freerun_tb;
     reg [7:0] expected = 8'hCC;
 
     ntsc_capture #(.SCOPE_FREERUN(1), .SCOPE_TEST_RAMP(3)) dut (
-        .clk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc), .adc_otr(1'b0),
+        .clk(clk), .fclk(fclk), .rst_n(rst_n), .fx(64'd0), .adc_d(adc), .adc_otr(1'b0),
         .rot_sel(4'd0), .gain_sel(2'd0), .dmp_ack(1'b0),
         .dmp_we(we), .dmp_addr(addr), .dmp_data(data), .dmp_rdy(ready)
     );

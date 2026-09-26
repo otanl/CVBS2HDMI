@@ -2470,6 +2470,47 @@ START detector saw SDA fall with SCL high; data first, then SCL.
 On the board it answered at once: present, the switch following the slide,
 knobs moving with the bench's turns.
 
+### Glitch controls: the knobs break the decoder itself (2026-09-26)
+
+The bench asked for glitch / datamosh control from the 8Angle, with one rule:
+not image processing on the output, but things only this decoder can do --
+each knob breaks one of its own stages.  Fully left is off, and must be the
+clean picture exactly.  ntsc_capture takes them as `fx`, a byte each:
+
+| knob | fx | what breaks |
+|---|---|---|
+| 1 | `fx_slice` | sync slicer raised from just above black to just under white, and long runs accepted: dark picture reads as sync, so the picture decides where lines start |
+| 2 | `fx_hhold` | real syncs thrown away (probability fx/256), flywheel and free-running starts up to 59 samples long: horizontal hold lost |
+| 3 | vertical roll (top) | the vertical servo's target walks on, the servo follows a line a frame, the picture rolls; knob off, it walks home the same way |
+| 4 | `fx_nco` | a phase ramp on the burst-locked reference, up to 23 kHz: hue turns along and down the picture; the per-line correction measures the NCO and cannot see it |
+| 5 | `fx_yc` | luma blended from the boxcar towards the raw sample: subcarrier crawl in luma, chroma fading |
+| 6 | `fx_adc` | the converter clock 1..9 tenths of a conversion off its calibration (`adc_front`'s `rot_skew`, tracking paused), so reads land in the switching window |
+| 7 | `fx_black` | the back-porch window moved up to 478 samples into the picture, black taken raw: every line's black follows its content |
+| 8 | `fx_hold` | lines left unpublished (probability fx/256): the line store repeats the last one |
+| switch | | green in the diagnostic view enables them all |
+
+**Which end is left was measured, not assumed**: all eight fully left read
+253..255, so `KNOB_INVERT` is 1.  A dead band (`KNOB_DEAD`, 16 counts) keeps a
+knob at the stop exactly off whatever the converter's noise.  With every knob
+left and the switch on, the board measures what it did without the feature:
+rotation 0.5 degrees, hues +7/-9/-2/-4/-6/+4, colour 60/60, no dropped rows.
+
+`make sim-video-glitch` applies each effect (and all together) for 50 lines of
+the colour-bar stimulus: it must visibly break the picture -- over 1000 wrong
+colour channels, or for the hold, lines unpublished -- and 200 lines after it
+is removed the bars must decode to the published values again, `max_error`
+17 as in sim-video.  The converter skew cannot show against a model with no
+switching window and is checked for recovery only; the roll is in the top
+level and was checked on the board.
+
+The first slice mapping added a fixed 0..119 codes to the normal threshold:
+nothing below about a quarter turn, where the slice was still under blanking,
+and nothing near full, where it sat over white and no run ever ended; and
+runs over 150 samples were still refused, so above blanking it only lost sync.
+Scaled between black and white with long runs accepted, it breaks the bars
+at every setting (4914 / 3920 / 2728 / 882 wrong channels at 0x10 / 0x50 /
+0x90 / 0xE0).
+
 ## Toolchain
 
 Open-source flow, same as the sibling project `../tang` (a Tang Nano **9K** starter that already

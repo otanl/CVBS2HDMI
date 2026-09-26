@@ -35,7 +35,7 @@ module adc_front_tb;
     wire       cal_done;
     adc_front #(.AUTO(AUTO), .WIN_W(WIN_W)) dut (
         .pclk(pclk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_clk(adc_clk),
-        .manual_rot(MANUAL[3:0]), .sample(sample), .rot_in_use(rot), .cal_done(cal_done)
+        .manual_rot(MANUAL[3:0]), .rot_skew(4'd0), .sample(sample), .rot_in_use(rot), .cal_done(cal_done)
     );
 
     // The converter: a new code every clock, from a known sequence.  A window

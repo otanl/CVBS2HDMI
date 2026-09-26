@@ -32,7 +32,12 @@ module top_ntsc_hdmi #(
     parameter         ADC_CLK_SWAP = 1'b0,
     // Diagnostic: the calibration off, the rotation stepping 0..9 every
     // 0.67 s, and each bit's two difference counts in the strip.
-    parameter         ADC_DIAG    = 1'b0
+    parameter         ADC_DIAG    = 1'b0,
+    // Which end of an 8Angle knob is "off".  Measured on the unit here: all
+    // eight turned fully left read 253..255, so the value is inverted and a
+    // knob turned left is zero.
+    parameter         KNOB_INVERT = 1'b1,
+    parameter [7:0]   KNOB_DEAD   = 8'd16
 ) (
     input  wire       clk27,
 
@@ -172,6 +177,34 @@ module top_ntsc_hdmi #(
         end
     end
 
+    // ---- the Unit 8Angle: glitch controls ------------------------------------
+    // Eight knobs, each breaking one stage of the decoder (ntsc_capture's fx_*,
+    // and the vertical roll below).  A knob turned fully left is off: a dead
+    // band of KNOB_DEAD counts keeps the picture exactly clean there whatever
+    // the converter's noise.  The switch in the green position (as the
+    // diagnostic view shows it) enables them, and nothing acts while the unit
+    // is not answering.
+    wire i2c_scl_low, i2c_sda_low;
+    assign i2c_scl = i2c_scl_low ? 1'b0 : 1'bz;
+    assign i2c_sda = i2c_sda_low ? 1'b0 : 1'bz;
+    wire [63:0] knobs;
+    wire        knob_sw, knob_present;
+    angle8 knob_unit (
+        .clk(pixel_clk), .rst_n(vid_rst_n),
+        .scl_in(i2c_scl), .sda_in(i2c_sda),
+        .scl_low(i2c_scl_low), .sda_low(i2c_sda_low),
+        .knobs(knobs), .sw(knob_sw), .present(knob_present), .scans()
+    );
+    wire        fx_on = knob_present && knob_sw;
+    wire [63:0] fx;
+    genvar ki;
+    generate
+        for (ki = 0; ki < 8; ki = ki + 1) begin : g_fx
+            wire [7:0] kraw = KNOB_INVERT ? ~knobs[8*ki +: 8] : knobs[8*ki +: 8];
+            assign fx[8*ki +: 8] = (fx_on && kraw > KNOB_DEAD) ? kraw - KNOB_DEAD : 8'd0;
+        end
+    endgenerate
+
     ntsc_capture #(.LEGACY_TIMING(LEGACY_TIMING),
                    .SCOPE_TEST_RAMP(SCOPE_TEST_RAMP),
                                       .CLAMP_FORCE(CLAMP_FORCE),
@@ -184,7 +217,7 @@ module top_ntsc_hdmi #(
         .clk(pixel_clk), .fclk(serial_clk), .rst_n(vid_rst_n),
         .adc_d(adc_d), .adc_otr(adc_otr),
         .adc_clk(adc_clk), .adc_clamp(adc_clamp),
-        .rot_sel(ADC_DIAG ? diag_rot : phase_sel), .rot_in_use(phase_used),
+        .rot_sel(ADC_DIAG ? diag_rot : phase_sel), .fx(fx), .rot_in_use(phase_used),
         .adc_cal_done(adc_cal_done),
         .adc_sweeps(adc_sweeps), .adc_pair_x(adc_pair_x), .adc_track(adc_track),
         .adc_dbg_rot(adc_dbg_rot), .adc_dbg_cx(adc_dbg_cx), .adc_dbg_cy(adc_dbg_cy),
@@ -243,8 +276,26 @@ module top_ntsc_hdmi #(
     reg        v_longer, v_shorter;
 
     localparam [10:0] V_TARGET = 11'd488;
-    wire [10:0] y_rel = (y >= V_TARGET) ? (y - V_TARGET)
-                                        : (y + 11'd525 - V_TARGET);
+    // fx[23:16], vertical hold: the servo's target walks on by fx/256 of a line
+    // every frame, and the servo, which only ever trims one line a frame so the
+    // sink keeps its lock, follows it -- the picture rolls.  Knob off, the
+    // target comes home and the servo walks the picture back, a line a frame.
+    wire [7:0]  fx_vroll = fx[23:16];
+    reg  [9:0]  v_off = 10'd0;
+    reg  [7:0]  v_frac = 8'd0;
+    wire [8:0]  v_frac_next = {1'b0, v_frac} + {1'b0, fx_vroll};
+    always @(posedge pixel_clk) begin
+        if (fx_vroll == 8'd0) begin
+            v_off <= 10'd0; v_frac <= 8'd0;
+        end else if (x == 11'd0 && y == 11'd0) begin
+            v_frac <= v_frac_next[7:0];
+            if (v_frac_next[8]) v_off <= (v_off == 10'd524) ? 10'd0 : v_off + 10'd1;
+        end
+    end
+    wire [10:0] v_tsum   = V_TARGET + {1'b0, v_off};
+    wire [10:0] v_target = (v_tsum >= 11'd525) ? v_tsum - 11'd525 : v_tsum;
+    wire [10:0] y_rel = (y >= v_target) ? (y - v_target)
+                                        : (y + 11'd525 - v_target);
     always @(posedge pixel_clk or negedge vid_rst_n) begin
         if (!vid_rst_n) begin
             y_at_field <= 11'd0; v_longer <= 1'b0; v_shorter <= 1'b0;
@@ -476,17 +527,6 @@ module top_ntsc_hdmi #(
     // trace only comes this low for codes under the sync tip.  To the right,
     // the switch as a green block and a red block while the unit is not
     // answering.
-    wire i2c_scl_low, i2c_sda_low;
-    assign i2c_scl = i2c_scl_low ? 1'b0 : 1'bz;
-    assign i2c_sda = i2c_sda_low ? 1'b0 : 1'bz;
-    wire [63:0] knobs;
-    wire        knob_sw, knob_present;
-    angle8 knob_unit (
-        .clk(pixel_clk), .rst_n(vid_rst_n),
-        .scl_in(i2c_scl), .sda_in(i2c_sda),
-        .scl_low(i2c_scl_low), .sda_low(i2c_sda_low),
-        .knobs(knobs), .sw(knob_sw), .present(knob_present), .scans()
-    );
     wire [10:0] k_rel    = y_d - 11'd400;
     wire        in_krows = (y_d >= 11'd400) && (y_d < 11'd464);
     wire [7:0]  k_val    = knobs[{k_rel[5:3], 3'd0} +: 8];

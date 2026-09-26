@@ -60,7 +60,7 @@ module replay_tb;
     wire [7:0]  black;
     ntsc_capture #(.THR_SHIFT(THR_SHIFT), .AUTO_PHASE(AUTO), .ADC_WIN_W(10)) dut (
         .clk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_otr(1'b0),
-        .adc_clk(adc_clk), .adc_clamp(), .rot_sel(ROT[3:0]), .gain_sel(2'd0),
+        .adc_clk(adc_clk), .adc_clamp(), .rot_sel(ROT[3:0]), .fx(64'd0), .gain_sel(2'd0),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_bank(),
         .line_done(line_done), .vsync_pulse(), .sync_locked(),
         .black_out(black), .dmp_ack(1'b0)

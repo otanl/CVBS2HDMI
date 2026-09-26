@@ -11,6 +11,17 @@ module ntsc_video_tb;
     parameter integer VBI_LINES = 24;
     parameter integer HSHIFT = 0;
     parameter integer TOD_NS = 10;      // converter output delay after adc_clk
+    // Glitch effects (ntsc_capture's fx) applied from sample FX_FROM to FX_TO.
+    // Nothing is checked from FX_FROM until RECOVER samples after FX_TO, and
+    // then the picture must be exactly as good as without them.  Meanwhile the
+    // effect must show: FX_MIN_BAD wrong colour channels at least, or at most
+    // FX_MAX_LINES lines published.
+    parameter [63:0]  FX = 64'd0;
+    parameter integer FX_FROM = 0;
+    parameter integer FX_TO = 0;
+    parameter integer RECOVER = 1602*200;
+    parameter integer FX_MIN_BAD = 0;
+    parameter integer FX_MAX_LINES = 1000000;
     // 126 MHz and the pixel clock divided from it, as on the board; the
     // decoder runs on the pixel clock, one sample per clock.
     reg fclk = 0;
@@ -23,14 +34,18 @@ module ntsc_video_tb;
     wire [10:0] wr_addr;
     wire [23:0] rgb;
     wire [7:0] black;
+    integer n = 0;
+    wire glitching  = (FX != 64'd0) && (n >= FX_FROM) && (n < FX_TO);
+    wire recovering = (FX != 64'd0) && (n >= FX_FROM) && (n < FX_TO + RECOVER);
+    integer glitch_bad = 0, glitch_lines = 0;
     ntsc_capture #(.ADC_WIN_W(10)) dut (
         .clk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc), .adc_otr(1'b0),
-        .adc_clk(adc_clk), .adc_clamp(), .rot_sel(4'd0), .gain_sel(2'd0),
+        .adc_clk(adc_clk), .adc_clamp(), .rot_sel(4'd0), .fx(glitching ? FX : 64'd0), .gain_sel(2'd0),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(rgb), .wr_bank(),
         .line_done(line_done), .vsync_pulse(vsync_pulse), .sync_locked(locked),
         .black_out(black), .dmp_ack(1'b0)
     );
-    integer n = 0, stim_n, pos, fsamp, half_no, half_pos, bar, r, g, b;
+    integer stim_n, pos, fsamp, half_no, half_pos, bar, r, g, b;
     integer lines = 0, pixels = 0, fields = 0, checks = 0, bad_lines = 0;
     integer bad_colours = 0, er, eg, eb, err, max_error = 0;
     real phase, value, yy, uu, vv;
@@ -77,10 +92,10 @@ module ntsc_video_tb;
         n = n + 1;
     end
     always @(negedge clk) if (rst_n) begin
-        if (vsync_pulse) fields = fields + 1;
+        if (vsync_pulse && !recovering) fields = fields + 1;
         if (HSHIFT && n > 1602*111 && n < 1602*125 && !locked)
             $fatal(1, "late sync caused repeated coasting and lost line lock");
-        if (!MONO && n > 420420 && fsamp < VBI_LINES*8008/5 && !dut.burst_locked)
+        if (!MONO && !recovering && n > 420420 && fsamp < VBI_LINES*8008/5 && !dut.burst_locked)
             $fatal(1, "vertical blanking dropped colour lock");
         if (wr_en) begin
             if (wr_addr[9:0] == 0) pixels = 0; // a partial line may be discarded
@@ -89,7 +104,15 @@ module ntsc_video_tb;
                 $display("bar=%0d rgb=%h u=%0d v=%0d ref=%h black=%0d pos=%0d cpos=%0d",
                          wr_addr[9:0]/80,rgb,dut.u_s,dut.v_s,dut.nco_ref,
                          black,pos,dut.cpos);
-            if (n > 1602*100 && fsamp > 1602*30 &&
+            if (glitching && fsamp > 1602*30 &&
+                (wr_addr[9:0] % 80) >= 32 && (wr_addr[9:0] % 80) < 48) begin
+                bar_rgb(wr_addr[9:0]/80, er, eg, eb);
+                if ((rgb[23:16] > er ? rgb[23:16] - er : er - rgb[23:16]) > 24 ||
+                    (rgb[15:8]  > eg ? rgb[15:8]  - eg : eg - rgb[15:8])  > 24 ||
+                    (rgb[7:0]   > eb ? rgb[7:0]   - eb : eb - rgb[7:0])   > 24)
+                    glitch_bad = glitch_bad + 1;
+            end
+            if (!recovering && n > 1602*100 && fsamp > 1602*30 &&
                 (wr_addr[9:0] % 80) >= 32 && (wr_addr[9:0] % 80) < 48) begin
                 bar_rgb(wr_addr[9:0]/80, er, eg, eb);
                 if (MONO) begin
@@ -110,7 +133,8 @@ module ntsc_video_tb;
             end
         end
         if (line_done) begin
-            if (n > 1602*100 && pixels != 640) begin
+            if (glitching) glitch_lines = glitch_lines + 1;
+            if (!recovering && n > 1602*100 && pixels != 640) begin
                 bad_lines=bad_lines+1;
                 $display("partial line n=%0d pixels=%0d cpos=%0d",n,pixels,dut.cpos);
             end
@@ -126,8 +150,13 @@ module ntsc_video_tb;
         $display("video: sync=%0d mono=%0d lock=%0d black=%0d fields=%0d lines=%0d bad_lines=%0d pixels_checked=%0d bad_channels=%0d max_error=%0d",
                  SYNC_DEPTH, MONO, locked, black, fields, lines, bad_lines,
                  checks, bad_colours, max_error);
-        if (!locked || fields != FIELDS || bad_lines || bad_colours || checks < 10000)
+        if (FX != 64'd0)
+            $display("glitch: fx=%h from line %0d to %0d: %0d wrong channels, %0d lines published; clean again after %0d lines",
+                     FX, FX_FROM/1602, FX_TO/1602, glitch_bad, glitch_lines, RECOVER/1602);
+        if (!locked || (FX == 64'd0 && fields != FIELDS) || bad_lines || bad_colours || checks < 10000)
             $fatal(1, "NTSC video decode failed");
+        if (glitch_bad < FX_MIN_BAD || glitch_lines > FX_MAX_LINES)
+            $fatal(1, "the glitch effect did not show");
         if (black < 99 || black > 101) $fatal(1, "back porch DC restoration failed");
         $display("RESULT PASS");
         $finish;
