@@ -306,7 +306,7 @@ NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/adc_front.v src/lin
                   src/video_line_store.v src/chroma_sincos.v \
                   src/sync_lpf.v src/burst_nco.v src/cordic_atan.v \
                   src/video_timing.v src/hdmi_out.v src/tmds_encoder.v \
-                  src/ntsc_status.v src/uart_tx.v src/rpll_126.v
+                  src/ntsc_status.v src/uart_tx.v src/rpll_126.v src/angle8.v
 # Built by concatenation so the pin numbers keep a single source: the ADC,
 # clock, LED, button and UART pins come from the probe constraints and the
 # TMDS pins from the HDMI ones.
@@ -317,9 +317,10 @@ NTSC_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP).fs
 
 ntsc: $(NTSC_BITSTREAM)
 
-$(NTSC_CST): $(PROBE_CONSTRAINTS) $(HDMI_CONSTRAINTS) | $(BUILD_STAMP)
+$(NTSC_CST): $(PROBE_CONSTRAINTS) $(HDMI_CONSTRAINTS) constraints/tangnano20k_i2c.cst | $(BUILD_STAMP)
 	cat $(PROBE_CONSTRAINTS) > $@
 	grep -E '"tmds_' $(HDMI_CONSTRAINTS) >> $@
+	cat constraints/tangnano20k_i2c.cst >> $@
 
 # -nodsp: the luma gain multiply otherwise lands in a MULT9X9 that Apicula
 # cannot pack (KeyError 'IRBY_IREG0BL_0').  It is a multiply by a constant, so
@@ -492,8 +493,8 @@ check-tools:
 	@$(TOOL) openFPGALoader --version >/dev/null
 	@echo "All required tools are available."
 
-.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
+.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-angle8 sim-hdmi test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-angle8 sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -608,6 +609,15 @@ sim-freerun: | $(BUILD_STAMP)
 		$(TOOL) iverilog -g2012 -s ntsc_freerun_tb -Pntsc_freerun_tb.FREE_RUN=$$fr \
 			-o $(BUILD_DIR)/ntsc_freerun_tb_$$fr $(CAPTURE_SIM_RTL) sim/ntsc_freerun_tb.v || exit $$?; \
 		$(TOOL) vvp $(BUILD_DIR)/ntsc_freerun_tb_$$fr || exit $$?; \
+	done
+
+# The Unit 8Angle reader against a model of the unit's firmware; DEV 0x44 is
+# the negative control, a bus with nothing at 0x43 on it.
+sim-angle8: | $(BUILD_STAMP)
+	@for dev in "7'h43" "7'h44"; do \
+		$(TOOL) iverilog -g2012 -s angle8_tb "-Pangle8_tb.DEV=$$dev" \
+			-o $(BUILD_DIR)/angle8_tb src/angle8.v sim/angle8_tb.v || exit $$?; \
+		$(TOOL) vvp $(BUILD_DIR)/angle8_tb || exit $$?; \
 	done
 
 sim-hdmi: | $(BUILD_STAMP)

@@ -1,0 +1,8 @@
+// Grove J4/J5 on the tangADC carrier: I2C for an M5Stack Unit (src/angle8.v).
+// Pin 1 of the Grove connector is FPGA 48, pin 2 is FPGA 49 -- SCL and SDA in
+// Grove's order.  Both are in bank 3, 3.3 V, with the buttons; pulled up to
+// 3V3 by 4.7 kOhm on the carrier (R15, R16) and again on the unit.
+IO_LOC  "i2c_scl" 48;
+IO_PORT "i2c_scl" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "i2c_sda" 49;
+IO_PORT "i2c_sda" IO_TYPE=LVCMOS33 PULL_MODE=UP;

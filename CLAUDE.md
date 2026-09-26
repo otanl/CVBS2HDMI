@@ -2433,6 +2433,43 @@ J2 carries FPGA pins **17, 18, 19, 20, 48, 49**. Pins 48 and 49 have 4.7 kΩ pul
 **FPGA 17–20 are also the Tang Nano 20K's onboard LEDs**, so anything driven on those J2 pins
 lights LEDs, and vice versa. Pick 48/49 for expansion unless you need four signals.
 
+Grove J4/J5 pin 1 is FPGA 48 and pin 2 is FPGA 49 (netlist), so 48 is SCL and 49
+SDA in Grove's order; pin 3 is **+5V**, pin 4 GND.  48/49 are in bank 3 at 3.3 V
+with the buttons (Apicula's `pin_bank`), away from the LVDS banks.  A Grove
+device that pulls SDA/SCL up to 5 V would overdrive them; check its schematic.
+
+### M5Stack Unit 8Angle on the Grove port (2026-09-26)
+
+`src/angle8.v` polls an 8Angle -- eight potentiometers and a slide switch behind
+an STM32F030 at 0x43 -- and `top_ntsc_hdmi` draws the result at the bottom of
+the diagnostic view (rows 400..463: a cyan bar per knob, two pixels a count;
+at x 528 a green block for the switch, at x 592 a red block while nothing
+answers).  Nothing else uses the values yet.
+
+What the unit's firmware (m5stack/M5Unit-8Angle-Internal-FW) actually does,
+because the Arduino library's register list does not say it:
+
+- **One register per transaction, no auto-increment.**  A write of the register
+  number (with a STOP) arms exactly one reply -- 0x10+n is channel n in eight
+  bits, 0x00+2n in twelve (two bytes, low first), 0x20 the switch -- and the
+  next read returns it.  A scan is nine write/read pairs, about 5 ms at 100 kHz.
+- **It stretches SCL** while it prepares a reply (HAL, `NoStretchMode`
+  disabled), so the master must wait for SCL to rise every time it lets go.
+- The switch register is the pin level through a 10 kOhm pull-up, not a
+  "pressed" flag; SW1 is a slide switch.
+- Its SDA/SCL are pulled to its own 3.3 V (4.7 kOhm, R12/R13), so it is safe on
+  these pins even though the Grove cable carries 5 V.
+
+`make sim-angle8` runs the reader against a model of that firmware, with 30 us
+of stretching on every read: all eight channels and the switch arrive and a
+change is picked up.  DEV 0x44 is the negative control -- nothing at 0x43,
+present stays low, no value written.  One bench bug worth knowing: the model
+first released SCL in the same instant it put the data bit on SDA, and its own
+START detector saw SDA fall with SCL high; data first, then SCL.
+
+On the board it answered at once: present, the switch following the slide,
+knobs moving with the bench's turns.
+
 ## Toolchain
 
 Open-source flow, same as the sibling project `../tang` (a Tang Nano **9K** starter that already

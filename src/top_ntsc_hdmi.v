@@ -45,6 +45,11 @@ module top_ntsc_hdmi #(
     output wire [5:0] led_n,
     output wire       uart_tx_pin,
 
+    // M5Stack Unit 8Angle on Grove J4/J5 (src/angle8.v).  Open drain: only
+    // ever pulled low from here.
+    inout  wire       i2c_scl,
+    inout  wire       i2c_sda,
+
     output wire       tmds_clk_p,
     output wire       tmds_clk_n,
     output wire [2:0] tmds_d_p,
@@ -466,7 +471,34 @@ module top_ntsc_hdmi #(
     wire scope_id_bit = scope_identity[31-x[8:4]];
     wire [7:0] scope_id_rgb = scope_id_bit ? 8'hFF : 8'h00;
 
-    wire [7:0] diagnostic_r = on_scope_id ? scope_id_rgb : on_ci    ? 8'h00 :
+    // The Unit 8Angle's eight knobs, near the bottom of the diagnostic view,
+    // eight rows apart and two pixels per count like the other bars.  The scope
+    // trace only comes this low for codes under the sync tip.  To the right,
+    // the switch as a green block and a red block while the unit is not
+    // answering.
+    wire i2c_scl_low, i2c_sda_low;
+    assign i2c_scl = i2c_scl_low ? 1'b0 : 1'bz;
+    assign i2c_sda = i2c_sda_low ? 1'b0 : 1'bz;
+    wire [63:0] knobs;
+    wire        knob_sw, knob_present;
+    angle8 knob_unit (
+        .clk(pixel_clk), .rst_n(vid_rst_n),
+        .scl_in(i2c_scl), .sda_in(i2c_sda),
+        .scl_low(i2c_scl_low), .sda_low(i2c_sda_low),
+        .knobs(knobs), .sw(knob_sw), .present(knob_present), .scans()
+    );
+    wire [10:0] k_rel    = y_d - 11'd400;
+    wire        in_krows = (y_d >= 11'd400) && (y_d < 11'd464);
+    wire [7:0]  k_val    = knobs[{k_rel[5:3], 3'd0} +: 8];
+    wire        k_row    = in_krows && (k_rel[2:0] < 3'd6);
+    wire on_knob  = k_row && (x < {2'd0, k_val, 1'b0});
+    wire on_ktrk  = k_row && (x < 11'd512);
+    wire on_ksw   = in_krows && knob_sw && (x >= 11'd528) && (x < 11'd576);
+    wire on_kgone = in_krows && !knob_present && (x >= 11'd592) && (x < 11'd640);
+
+    wire [7:0] diagnostic_r = on_scope_id ? scope_id_rgb : on_knob ? 8'h00 :
+                       on_ksw   ? 8'h00 : on_kgone ? 8'hFF : on_ktrk ? 8'h30 :
+                       on_ci    ? 8'h00 :
                        on_cq    ? 8'hFF :
                        on_clk_  ? 8'h00 :
                        on_bmin  ? 8'h00 :
@@ -491,7 +523,9 @@ module top_ntsc_hdmi #(
                        on_trace ? 8'hFF :
                        on_thr   ? 8'h00 :
                        on_grid  ? 8'h20 : bg_r;
-    wire [7:0] diagnostic_g = on_scope_id ? scope_id_rgb : on_ci    ? 8'hFF :
+    wire [7:0] diagnostic_g = on_scope_id ? scope_id_rgb : on_knob ? 8'hFF :
+                       on_ksw   ? 8'hFF : on_kgone ? 8'h00 : on_ktrk ? 8'h30 :
+                       on_ci    ? 8'hFF :
                        on_cq    ? 8'h40 :
                        on_clk_  ? 8'hFF :
                        on_bmin  ? 8'hC0 :
@@ -516,7 +550,9 @@ module top_ntsc_hdmi #(
                        on_trace ? (below_thr ? 8'h00 : 8'hFF) :
                        on_thr   ? 8'hC0 :
                        on_grid  ? 8'h20 : bg_g;
-    wire [7:0] diagnostic_b = on_scope_id ? scope_id_rgb : on_ci    ? 8'h40 :
+    wire [7:0] diagnostic_b = on_scope_id ? scope_id_rgb : on_knob ? 8'hFF :
+                       on_ksw   ? 8'h00 : on_kgone ? 8'h00 : on_ktrk ? 8'h30 :
+                       on_ci    ? 8'h40 :
                        on_cq    ? 8'hFF :
                        on_clk_  ? 8'hFF :
                        on_bmin  ? 8'hFF :
