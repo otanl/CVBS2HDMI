@@ -369,6 +369,21 @@ ntsc-run: $(NTSC_BITSTREAM)
 ntsc-flash: $(NTSC_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) -f $<
 
+# The known-good build of 2026-09-26 (tag good-2026-09-26), kept as the
+# bitstream itself so it can be written back whatever the sources or the
+# toolchain have become since.  restore-flash survives a power cycle;
+# restore-program loads it to SRAM only.
+GOOD_BITSTREAM := bitstreams/ntsc_good_2026-09-26.fs.gz
+.PHONY: restore-flash restore-program
+$(BUILD_DIR)/ntsc_good.fs: $(GOOD_BITSTREAM) | $(BUILD_STAMP)
+	gunzip -c $< > $@
+
+restore-flash: $(BUILD_DIR)/ntsc_good.fs
+	$(TOOL) openFPGALoader -b $(BOARD) -f $<
+
+restore-program: $(BUILD_DIR)/ntsc_good.fs
+	$(TOOL) openFPGALoader -b $(BOARD) $<
+
 # The M5 compatibility geometry, for a source with no sync step.  It was the
 # default until the respun board showed this source does emit sync; measured
 # back to back at seed 3 it drops 47.8% of rows and carries colour on 0 frames

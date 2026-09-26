@@ -2469,7 +2469,14 @@ make program               # load to SRAM (fast loop, lost at power-off)
 make flash                 # write to onboard flash (persistent)
 make monitor               # read the report (see the serial gotcha below)
 make clean
+make restore-flash         # write back the known-good 2026-09-26 NTSC bitstream
 ```
+
+`bitstreams/ntsc_good_2026-09-26.fs.gz` is that bitstream itself (tag
+`good-2026-09-26`, sha256 of the `.fs` `07ca2c89...acc`), kept so the known-good
+state survives source and toolchain changes; `make restore-program` loads it to
+SRAM only.  It is the only bitstream in version control -- add another only
+when the user asks for a restore point.
 
 Diagnostic variants — same RTL, only a constraint or a parameter differs:
 
