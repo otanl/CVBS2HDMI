@@ -5,7 +5,8 @@ Same bar geometry as the board's HDMI captures (first bar at x=24, 80 pixels
 a bar, read over the middle 40), so a figure here predicts the board's.  The
 luma order test matches scripts/video_quality.py's; on top of it this reports
 what that test cannot see: how much the luma of one bar changes from line to
-line, and how stable each bar's hue is, against the colours the M5 draws.
+line, how stable each bar's hue is, against the colours the M5 draws, and how
+far whole lines turn together -- the horizontal hue bands.
 
     python3 scripts/replay_quality.py build/replay.txt [--skip N] [--png OUT.png]
     python3 scripts/replay_quality.py --frames 'build/cap_*.png'
@@ -86,6 +87,7 @@ def main():
     print("white bar luma: mean %.1f, line-to-line change median %.1f max %.1f"
           % (sum(lum0) / len(lum0), alt[len(alt)//2], alt[-1]))
     print("  bar     luma   want-hue  hue-err  line-to-line  chroma  want")
+    offsets = []
     for b in range(1, 7):
         _, U, V = uv(*BARS[b])
         want = math.degrees(math.atan2(V, U))
@@ -97,11 +99,19 @@ def main():
         c = sum(math.cos(math.radians(e)) for e in errs) / len(errs)
         s = sum(math.sin(math.radians(e)) for e in errs) / len(errs)
         mean_err = math.degrees(math.atan2(s, c))
+        offsets.append([(e - mean_err + 180) % 360 - 180 for e in errs])
         steps = sorted(abs((p - q + 180) % 360 - 180) for p, q in zip(errs, errs[1:]))
         lum = sum(uv(*row[b])[0] for row in bars) / len(bars)
         print("  %-7s %5.1f  %7.1f  %+7.1f  %6.1f med     %5.1f  %5.1f"
               % (NAMES[b], lum, want, mean_err, steps[len(steps)//2],
                  sum(mags) / len(mags), math.hypot(U, V)))
+    # A line whose bars all turn together is a horizontal band -- the burst
+    # reference moved, not the chroma.  The per-bar line-to-line medians above
+    # cannot see it: bands last several lines, so most steps are small.
+    rot = [sorted(col)[len(col) // 2] for col in zip(*offsets)]
+    print("hue bands: whole-line rotation rms %.1f deg, %.1f%% of lines beyond 20"
+          % (math.sqrt(sum(r * r for r in rot) / len(rot)),
+             100.0 * sum(1 for r in rot if abs(r) > 20) / len(rot)))
     if a.png:
         ppm = a.png + ".ppm"
         with open(ppm, "wb") as f:

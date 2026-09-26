@@ -784,6 +784,10 @@ interval sitting a few lines inside the visible area.
 
 ### Track the burst angle; do not believe each line's measurement
 
+**Superseded (2026-09-26):** tracking is now off by default -- with eight
+working bits each line's measurement is good to a degree, and the tracker's
+memory was drawing horizontal hue bands.  See *The horizontal hue bands*.
+
 `burst_nco` now predicts this line's burst angle from the last one plus a
 learned per-line step, and blends the measurement into that rather than taking
 it raw. The step is real and nearly constant -- 124.8 degrees per line on this
@@ -1082,6 +1086,55 @@ exposed two more things:
   line to line, median row-to-row difference 1.2..2.3 (4.8 before); seed 11
   about 32 degrees line to line; seed 3 wrong colour.  `NTSC_SEED` is 5.  The
   `sample-clock` branch has no ALU cells and was measured not to depend on it.
+
+### The horizontal hue bands: the tracker's memory, then the seed (2026-09-26)
+
+With the bars right, what was left was horizontal banding: every bar of a line
+turning hue together, 36 degrees rms, starting abruptly and dying away over 4
+to 20 lines.  `scripts/replay_quality.py` now prints this as **hue bands**, the
+whole-line rotation -- the median over the six colour bars of each bar's hue
+less its mean.  The per-bar line-to-line medians cannot see it, and read 2..4
+degrees throughout: a band lasts several lines, so most steps are small.
+
+**Not the source, not C13.**  The corrected recording's burst phase against a
+single fixed oscillator varies 1.0 degree rms line to line, and the bars 0.3 to
+1.1.  The replay holds every active line within 2 degrees, including across a
+synthesised 22-line vertical interval with no burst.  And a fixed filter treats
+every line alike, so it cannot turn one line and not the next.
+
+Two changes, both in `burst_nco`:
+
+- **The tracker's prediction left out `correlation_adjust`**, the phase step
+  the loop has just given the oscillator.  Every loop correction therefore
+  reached the tracker as a measurement error, a quarter of it was taken, and
+  the rest decayed as a band.  With it included, `sim-tracking` worst goes from
+  4.41 to 0.31 degrees, and 5.25 to 0.82 with the step knocked out.
+- **Tracking is off by default** (`BURST_TRACK = 0`).  It was chosen when one
+  line's measurement came through five bits and a 19-code burst; now it is good
+  to a degree, averaging buys nothing (replay 0.8 raw against 0.9 tracked), and
+  memory is what lets one bad update spoil twenty lines.  `sim-reference`, which
+  checks the reference itself, goes from 4.36/4.89/7.45 degrees worst to
+  0.93/1.33/5.62.
+
+On the board the seed matters more than either change -- whole-line rotation
+rms, one netlist per row, each seed repeating itself across loads:
+
+| | by seed | best |
+|---|---|---|
+| tracking (previous master) | 5.8, 10.3, 19, 34, 36, 39, 66; seed 3 fails timing | seed 8, but bar hues +6..+26 |
+| raw (now) | **0.7**, 3.4, 12, 21, 33, 37, 38, 49 | **seed 5**: 0.6..0.8 over three loads, 0.1..0.2% of lines beyond 20 degrees, hues -9..+8 |
+
+The previous master's seed 5 read 36; `make ntsc` now reproduces the raw
+seed 5 byte for byte.  Where a bad seed still bands with tracking off, the
+state carrying it can only be the NCO loop's.  So the lottery is not gone, and
+the `sample-clock` branch's ALU-free decoder is still the structural answer to
+it.
+
+**Loop a recording on a multiple of five lines.**  The M5's line is 1601.6
+samples, so 18 lines is 28828.8, and the loop drops 0.8 of a sample: a 41-degree
+step in the subcarrier at every seam, which the tracker turned into a band
+every eighteen lines and made the replay look worse than the board.  Ten lines
+of `m5_tape_fixedio_18lines.hex` are exactly 16016 samples (`+nsamp=16016`).
 
 ### What the M5 actually transmits, measured at full rate
 

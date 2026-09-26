@@ -16,7 +16,23 @@ module burst_nco #(
     // instead of taking it raw.  TRACK_P is how much of the error to apply to
     // the angle, TRACK_I how much to the learned per-line step, both as right
     // shifts -- so larger means slower and quieter.
-    parameter         BURST_TRACK = 1'b1,
+    //
+    // Off by default since 2026-09-26.  Everything below was measured through
+    // a converter delivering 24 of 256 codes and a 19-code burst, when one
+    // line's measurement was worth little on its own.  With eight working bits
+    // the M5's burst measures to a degree per line (1.0 rms on the recording),
+    // so averaging buys nothing -- the replay decodes 0.8 degrees rms raw
+    // against 0.9 tracked -- and a tracker's memory is what turns one bad
+    // update into a band of rotated hue twenty lines deep.  On the board,
+    // whole-line hue rotation rms by seed (scripts/replay_quality.py --frames):
+    //
+    //   tracking   5.8 10.3 19 34 36 39 66   (seeds 8 7 4 2 5 6 1; 3 fails timing)
+    //   raw        0.7  3.4 12 21 33 37 38 49 (seeds 5 3 1 6 8 2 4 7)
+    //
+    // The spread is the placement lottery in CLAUDE.md, and it is larger than
+    // the difference between the rows; the best build is raw, seed 5.  Turn
+    // tracking back on only for a burst too weak to measure line by line.
+    parameter         BURST_TRACK = 1'b0,
     // 2, chosen against how many picture rows come out correct -- not against
     // the streaking figure that first suggested 4.
     //
@@ -121,7 +137,13 @@ module burst_nco #(
     // There is a whole line before the answer matters, so the split is free.
     reg  [31:0] track_meas;
     reg         track_valid;
-    wire [31:0] track_pred = burst_off + burst_step;
+    // The prediction includes correlation_adjust: the step the phase loop has
+    // just given the oscillator, which moves this line's measured angle by
+    // exactly that much and is no evidence about the burst.  Left out, every
+    // loop correction reached the tracker as an error, only a quarter of it was
+    // taken, and the rest decayed over the following lines as a hue band.  In
+    // stage one with the measurement, off the 126 MHz tracking path.
+    reg  [31:0] track_pred;
     wire signed [31:0] track_err = $signed(track_meas - track_pred);
     // Evaluate the shifts in a signed context and only then add them to the
     // unsigned accumulators.  Inline, `track_pred + (track_err >>> TRACK_P)`
@@ -217,7 +239,7 @@ module burst_nco #(
             sect_r     <= 32'd0;
             sect_new   <= 1'b0;
             correlation_adjust <= 32'd0;
-            track_meas <= 32'd0; track_valid <= 1'b0;
+            track_meas <= 32'd0; track_valid <= 1'b0; track_pred <= 32'd0;
             burst_step <= 32'd0;
             have_step  <= 1'b0;
             have_prev  <= 1'b0;
@@ -284,6 +306,7 @@ module burst_nco #(
                 // share the same phase, and any PLL step made after the
                 // correlation has to be folded in here.
                 track_meas  <= sect_r + correlation_adjust;
+                track_pred  <= burst_off + burst_step + correlation_adjust;
                 track_valid <= 1'b1;
             end else if (track_valid) begin
                 track_valid <= 1'b0;
@@ -320,7 +343,7 @@ module burst_nco #(
                     // makes the step the angle itself, and the loop then has to
                     // unwind a whole turn of wrong prediction.
                     burst_off  <= track_meas;
-                    burst_step <= track_meas - burst_off;
+                    burst_step <= track_meas - correlation_adjust - burst_off;
                     have_step  <= 1'b1;
                 end else begin
                     burst_off <= track_meas;

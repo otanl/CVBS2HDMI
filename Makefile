@@ -330,13 +330,12 @@ $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-# Seed 5, chosen by measurement on the board after the bank-5 inputs were
-# packed correctly and the tracker's trap was fixed: three loads each of seeds
-# 3, 5 and 11 of one netlist, every seed consistent across its loads -- seed 5
-# hue +3/+0/-6/+7 deg and 0.8..2.5 deg line to line, seed 11 about 32 deg line
-# to line, seed 3 wrong colour.  Apicula's ALU bug (CLAUDE.md), so a seed is
-# part of the build.  160.8 MHz.  Re-measure after any RTL change, over more
-# than one load.
+# Seed 5, chosen by measurement on the board once burst tracking was turned
+# off (2026-09-26): seeds 1..8 of this netlist, whole-line hue rotation rms
+# 0.7 (seed 5, three loads: 0.6..0.8), 3.4, 12, 21, 33, 37, 38 and 49 deg; seed
+# 5's bar hues -9..+8 deg.  Every seed repeats itself across loads.  Apicula's
+# ALU bug (CLAUDE.md), so a seed is part of the build.  169.6 MHz.  Re-measure
+# after any RTL change, over more than one load.
 NTSC_SEED ?= 5
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
