@@ -477,8 +477,8 @@ check-tools:
 	@$(TOOL) openFPGALoader --version >/dev/null
 	@echo "All required tools are available."
 
-.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
+.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-hdmi test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-freerun sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -584,6 +584,16 @@ sim-video-late: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s ntsc_video_tb -Pntsc_video_tb.HSHIFT=24 -Pntsc_video_tb.FIELDS=1 \
 		-o $(BUILD_DIR)/ntsc_video_late_tb $(CAPTURE_SIM_RTL) sim/ntsc_video_tb.v
 	$(TOOL) vvp $(BUILD_DIR)/ntsc_video_late_tb
+
+# A broken input is shown as noise, not a black screen or a frozen line, and a
+# real signal still locks as fast.  FREE_RUN=0 is the negative control: the
+# bench must see its black screen.
+sim-freerun: | $(BUILD_STAMP)
+	@for fr in 1 0; do \
+		$(TOOL) iverilog -g2012 -s ntsc_freerun_tb -Pntsc_freerun_tb.FREE_RUN=$$fr \
+			-o $(BUILD_DIR)/ntsc_freerun_tb_$$fr $(CAPTURE_SIM_RTL) sim/ntsc_freerun_tb.v || exit $$?; \
+		$(TOOL) vvp $(BUILD_DIR)/ntsc_freerun_tb_$$fr || exit $$?; \
+	done
 
 sim-hdmi: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s tmds_encoder_tb -o $(BUILD_DIR)/tmds_encoder_tb src/tmds_encoder.v sim/tmds_encoder_tb.v

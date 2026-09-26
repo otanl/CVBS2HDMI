@@ -47,6 +47,14 @@ module ntsc_capture #(
     parameter integer RELEASE       = 10,
     parameter integer FORCE_GIVEUP  = 4,
     parameter integer FMARGIN       = 8,
+    // While acquiring, with no line start for a line and more, restart the
+    // write window on its own at the nominal period.  A signal with no usable
+    // sync is then shown -- as the noise it is, like a television -- instead
+    // of a black screen before the first lock, or the last good line repeated
+    // down the screen after losing it.  It moves ccnt only: acquisition, the
+    // lock count and the flywheel never see it, so a real sync is taken the
+    // moment one arrives.
+    parameter         FREE_RUN      = 1'b1,
     parameter integer THR_SHIFT_LO  = 5,
     parameter integer ACC_WIN       = LEGACY_TIMING ? 800 : 128,
     parameter         SCOPE_LIVE    = 1'b1,
@@ -195,6 +203,12 @@ module ntsc_capture #(
     localparam integer P_WIN     = P_WIN_WIDE;   // for P_MIN/P_MAX below
     localparam integer P_MIN     = P_NOM - 160;
     localparam integer P_MAX     = P_NOM + 160;
+    // Free-running starts land just before the active window, so every one
+    // writes a whole line, and follow one another a nominal line apart.  A
+    // real edge sets ccnt near 93 and the next is due about P_NOM later; one
+    // arriving after FREE_AT still resets ccnt and simply restarts the line.
+    localparam integer FREE_TO   = ACTIVE_START - 4;
+    localparam integer FREE_AT   = FREE_TO + P_NOM;
     localparam integer P_BAND    = 128;
     localparam integer VS_REFRACT = 60000;
     localparam integer FAST_WIN   = 2048;
@@ -817,6 +831,9 @@ module ntsc_capture #(
                     ccnt <= LEGACY_TIMING ? 12'd0 :
                             (line_real ? lowrun + LPF_DELAY + 1 : ccnt_real);
                     if (line_real) ccnt_real <= lowrun + LPF_DELAY + 1;
+                end else if (FREE_RUN && acquiring && ccnt == FREE_AT[11:0]) begin
+                    ccnt <= FREE_TO[11:0];
+                    lag  <= 12'd0;   // a forced run's lag would shift the window
                 end else if (ccnt != 12'hFFF) begin
                     ccnt <= ccnt + 12'd1;
                 end

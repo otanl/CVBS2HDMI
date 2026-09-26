@@ -1089,6 +1089,34 @@ exposed two more things:
   `sample-clock` branch has no ALU cells and was measured not to depend on it;
   it is merged now (*The decoder on the pixel clock*).
 
+### A broken input is shown, not blacked out (2026-09-26)
+
+Wanted behaviour, from the bench: a damaged or missing signal should come out
+as noise, the way a television shows it, never as a black screen.  It did not.
+Lines were published only from line starts, and while acquiring there are no
+forced ones (*Do not run the flywheel during acquisition*), so a signal with no
+usable sync published nothing: black before the first lock, and after losing
+lock, four flywheel lines and then the last good line repeated down the whole
+screen.
+
+`FREE_RUN` restarts only the write window -- `ccnt`, just before
+`ACTIVE_START`, one nominal line apart -- whenever acquisition has gone a line
+and more without a start.  `pcnt`, the lock count and the flywheel never see
+it, so a real sync is taken the moment it arrives, and one that turns up after
+a free start simply restarts that line before it is published.  `make
+sim-freerun`, noise / recording / flat level / noise / recording:
+
+| | noise | recording | flat | noise | recording | lock after |
+|---|---|---|---|---|---|---|
+| without | 1 of 60 | 158 of 200 | 6 of 40 | 0 of 40 | 158 of 200 | 104, 105 lines |
+| `FREE_RUN` | 60 of 60 | 199 of 200 | 40 of 40 | 40 of 40 | 200 of 200 | 104, 105 lines |
+
+So it also fills the lines that used to go missing before lock.  On the board
+with the M5 it measures exactly as before (rotation 0.5 degrees, same hues,
+colour on 60 of 60 frames, two loads).  Free lines skip the burst and back
+porch windows, so black holds its last value and colour times out to
+monochrome after the burst watchdog -- snow, not colour noise, once it settles.
+
 ### The horizontal hue bands: the tracker's memory, then the seed (2026-09-26)
 
 With the bars right, what was left was horizontal banding: every bar of a line
