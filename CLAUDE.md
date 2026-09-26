@@ -125,7 +125,8 @@ Things worth knowing before changing it:
   `ntsc_capture` runs at 135 MHz rather than 108.
 - **Synthesise with `-nodsp`.** The luma gain otherwise infers a `MULT9X9` that Apicula cannot
   pack (`KeyError: 'IRBY_IREG0BL_0'`). The gains are constants, built from shift-adds.
-- **The sampling phase is measured, continuously** (`AUTO_PHASE`, since 2026-09-25). A fixed
+- **The sampling phase is measured, continuously** (`AUTO_PHASE`, since 2026-09-25; now
+  `adc_front`'s rotation calibration, see *The decoder on the pixel clock*). A fixed
   phase is placement-dependent and was the cause of colour that came and went between rebuilds;
   see *The sampling instant moves with every placement* below. Do not go back to a constant.
 - **The analog clamp is not used**; DC restoration is digital, from the back porch at ccnt
@@ -1084,8 +1085,9 @@ exposed two more things:
 - **Master's placement lottery is real.**  Seeds 3, 5 and 11 of one netlist,
   each consistent across its loads: seed 5 hue +3/+0/-6/+7 degrees, 0.8..2.5
   line to line, median row-to-row difference 1.2..2.3 (4.8 before); seed 11
-  about 32 degrees line to line; seed 3 wrong colour.  `NTSC_SEED` is 5.  The
-  `sample-clock` branch has no ALU cells and was measured not to depend on it.
+  about 32 degrees line to line; seed 3 wrong colour.  `NTSC_SEED` was 5.  The
+  `sample-clock` branch has no ALU cells and was measured not to depend on it;
+  it is merged now (*The decoder on the pixel clock*).
 
 ### The horizontal hue bands: the tracker's memory, then the seed (2026-09-26)
 
@@ -1124,11 +1126,11 @@ rms, one netlist per row, each seed repeating itself across loads:
 | tracking (previous master) | 5.8, 10.3, 19, 34, 36, 39, 66; seed 3 fails timing | seed 8, but bar hues +6..+26 |
 | raw (now) | **0.7**, 3.4, 12, 21, 33, 37, 38, 49 | **seed 5**: 0.6..0.8 over three loads, 0.1..0.2% of lines beyond 20 degrees, hues -9..+8 |
 
-The previous master's seed 5 read 36; `make ntsc` now reproduces the raw
-seed 5 byte for byte.  Where a bad seed still bands with tracking off, the
-state carrying it can only be the NCO loop's.  So the lottery is not gone, and
-the `sample-clock` branch's ALU-free decoder is still the structural answer to
-it.
+The previous master's seed 5 read 36; `make ntsc` reproduced the raw seed 5
+byte for byte until the merge below.  Where a bad seed still bands with tracking off, the
+state carrying it can only be the NCO loop's.  So the lottery was not gone
+with this change; the ALU-free decoder, merged the same day, is what removed
+it -- see *The decoder on the pixel clock*.
 
 **Loop a recording on a multiple of five lines.**  The M5's line is 1601.6
 samples, so 18 lines is 28828.8, and the loop drops 0.8 of a sample: a 41-degree
@@ -1287,6 +1289,136 @@ reproduced byte for byte by `make ntsc`.
 
 The IO registers and the read-phase calibration stay: each removes a real
 placement dependence, and they cost nothing.
+
+### The decoder on the pixel clock, with no ALU cells (merged 2026-09-26)
+
+Everything but the converter's clock now runs on the 25.2 MHz pixel clock, one
+sample per clock, and is built with `synth_gowin -nodsp -noalu`: 0 ALU cells,
+58% of LUTs, about 50 MHz against 25.2 needed.  Every bench reproduces its
+126 MHz figure (sim-video `max_error=17`, capture 379/400 and weak 400/400,
+reference 4.36/4.89/7.45 deg, tracking 4.41), and replaying both M5
+recordings, every bar's hue matches the 126 MHz design within 0.2 degrees.
+
+**The converter interface** (`src/adc_front.v`) had to change shape.  A
+ten-read `IDES10` per bit would be ideal and cannot be had: it takes both IO
+cells of a pin pair, and every data pin on this board shares its pair with
+another ADC signal (nextpnr refuses it).  Instead each bit is an `IDDR` on the
+pixel clock -- two reads a conversion, rising (the sample) and falling (the
+witness) -- and the converter's clock comes from an `ODDR` on 126 MHz sending
+`1111100000` rotated in 3.97 ns steps.  The AD9280's outputs are latched, so
+two reads with no switching between them agree bit for bit whatever the
+video does; counting disagreements per rotation locates the switching, and
+the centre of the longer quiet run is at least a quarter conversion from every
+read whatever the pixel clock's duty cycle.  `make sim-adc-front` covers a
+whole period of output delay, a 14 ns switching window, drift both ways,
+glitching bits, and a negative control.
+
+**Two things one sample per clock broke, both silent:**
+
+- `burst_nco` registered its correlator weights from the phase.  At five
+  clocks per sample the lag was invisible; at one it paired every sample with
+  the previous sample's phase, 51 degrees against the demodulator, which pairs
+  them correctly.  sim-video: `max_error=216`, with sync, lock and black all
+  perfect.  The weights now come straight from the current phase.
+- The last burst product reaches `sum_r` three clocks after the gate falls,
+  which at five clocks per sample had always happened by the next strobe.  The
+  fall is now acted on by clock count, and a gate restart drops the pipeline.
+
+The colour pipeline costs samples at this rate: rgb is four samples later
+(`PIPE`), `y_delay` is two longer to keep luma with it, and writes start four
+later so every pixel stays put.  The period arithmetic is registered one
+sample ahead (`rcnt + 1`); the window compares are combinational.
+
+**Bits 0, 1, 4 and 5 read noisily, and the calibration must not count them.**
+`make ntsc-adcdiag` steps the rotation through 0..9 and shows each bit's
+rising/falling disagreement (`scripts/adc_diag.py` records a few seconds of
+the strip as video and tabulates it).  Bits 2, 3, 6 and 7 -- pins 72, 76, 75,
+77, the top bank -- read exactly alike at four rotations of ten, as a latched
+output should.  Bits 0, 1, 4 and 5 -- pins 27..30, the bottom bank beside the
+HDMI pins -- disagree on 3 to 13 percent of conversions at *every* rotation.
+Counted in, no rotation was ever quiet: the calibration re-swept for ever (63
+sweeps within seconds) while the picture still looked fine, because a moving
+read instant shifts burst and chroma alike.  `CAL_MASK` now counts the top
+bank only; on the board every seed then settles once, at rotation 3, with 0
+disagreements in 16384.  Why the bottom bank misreads is not known --
+crosstalk from the TMDS pins and slow edges are the candidates -- and it may
+be costing noise in those four bits.
+
+**Explained, 2026-09-25:** Apicula packed those four inputs as LVDS receivers
+(*Bits 0, 1, 4 and 5 were packed as LVDS receivers*), and every build now
+goes through `scripts/gowin_pack_io.py`.  `CAL_MASK` is kept: the top bank
+alone still locates the switching, and the choice within the quiet run already
+counts all eight bits.
+
+**The strip.**  The bottom eight rows of the picture carry the interface's
+state as two 32-bit words, 16-pixel cells, white = 1 (`ADC_STRIP`): rotation,
+calibrated, pair, sweeps so far, the last tracking window's disagreement
+count, and one rotation's sweep counts per frame.  `scripts/adc_strip.py`
+reads it from captures.  **Sweeps must stay at 1 and track at 0**; anything
+else means the read is not clean, however good the picture looks.
+
+**The colour failures were the burst tracker, not the toolchain.**  With the
+read clean, one load in two still lost colour -- colour on half the frames, a
+random-looking hue on every line -- and it looked like placement: three seeds
+of one netlist gave two good and one bad.  It is not.  **The same bitstream,
+loaded again, went from bad to good and back**, and the strip showed why: the
+burst's measured angle was right (the CORDIC matches atan2 of its own inputs
+within 0.2 degrees, every frame, good runs and bad), but the tracked angle
+`burst_off` was cycling round it -- two values about 160 degrees apart, or
+three about 120 apart.
+
+`burst_nco` predicts each line's burst angle from the last plus a learned
+per-line step.  A step a half or a third of a turn wrong is a stable trap: the
+prediction cycles round the measurement, the corrections cancel over the
+cycle, and nothing ever pulls it out.  Whether an acquisition falls in is
+chance -- it depends on where the loop happens to be when the step is seeded --
+so it follows the load, not the build.  `sim-tracking` reproduces it by
+knocking the step half or a third of a turn out: the old tracker stays out by
+94 and 112 degrees, for good.
+
+The fix keeps a running mean of the miss (1/8 a line) and relearns the step
+from the next two measurements when it passes 45 degrees; a right tracker
+misses by a few.  A run of large misses was tried first and is not enough: in
+the three-cycle one line in three lands close and the run never completes --
+the board found that case after simulation passed the two-cycle one.
+
+Measured with the fix, two seeds, five loads each, the same M5 boot:
+
+| | colour frames | correct rows | dropped | line-to-line | hue G/M/R/B |
+|---|---|---|---|---|---|
+| seed 3, loads a..e | 60/60 every time | 99.3..99.6% | 0 | 2.1..3.8 deg | +3.2 / +2.2 / -2.3 / +12.2 |
+| seed 11, loads a..e | 60/60 every time | 99.6..99.7% | 0 | 2.2..3.8 deg | +3.2 / +2.3 / -2.4 / +12.2 |
+
+Every figure agrees across all ten loads to within 0.4 degrees, while the
+calibration settled at rotations 0, 2, 5 and 6 on different loads -- it
+absorbs the load-to-load phase between the 126 MHz counter and the pixel
+clock divider, as designed.  Against the measured 126 MHz build (master,
+seed 11) on the same boot: 89.1% correct, 4.3..4.8 degrees line to line.
+
+**This retires the "placement lottery" as recorded above for the colour
+path.**  The 126 MHz design has the same tracker, and every comparison
+behind "the rest of the placement lottery is Apicula's ALU bug" was one load
+per build, so the trap explains those swings at least as well; it was not
+re-measured there.  The ALU bug is real upstream and `-noalu` costs nothing
+now, so it stays.  The rule that follows: **load a build more than once
+before crediting or blaming its placement.**
+
+**Merged into master, 2026-09-26**, together with master's IO packing, raw
+burst angle and the tracker's prediction fix.  That last paragraph was only
+half right: the trap was real, but so was the 126 MHz lottery -- with the trap
+escaped and tracking off, eight seeds of that design still spread 0.7..49
+degrees of whole-line hue rotation (*The horizontal hue bands*).  This design
+has none.  Eight seeds of one netlist, one after another on one M5 boot,
+scored by `replay_quality.py --frames`:
+
+| | whole-line rotation rms | lines beyond 20 deg | hue Y/C/G/M/R/B | line to line |
+|---|---|---|---|---|
+| 126 MHz master, seed 5 (its best of eight) | 2.2 | 0.3% | +7/-9/-2/-4/-5/+4 | 0.2..0.5 |
+| pixel clock, seeds 1..8 | **0.5, every seed** | **0.0%** | +7/-9/-2/-4/-6/+4, every seed | 0.2..0.4 |
+
+Every seed calibrated once -- at rotation 0, 2, 6 or 8 -- with no disagreement
+in 16384, and seeds 3, 5 and 8 reloaded read the same to the digit.  Timing:
+the pixel clock makes 49..52 MHz against 25.2 on every seed.
 
 ### The M5's blanking levels depend on its boot
 

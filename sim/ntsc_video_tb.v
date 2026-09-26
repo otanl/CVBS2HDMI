@@ -10,17 +10,22 @@ module ntsc_video_tb;
     parameter integer FIELDS = 3;
     parameter integer VBI_LINES = 24;
     parameter integer HSHIFT = 0;
-    reg clk = 0;
-    always #4 clk = ~clk;
+    parameter integer TOD_NS = 10;      // converter output delay after adc_clk
+    // 126 MHz and the pixel clock divided from it, as on the board; the
+    // decoder runs on the pixel clock, one sample per clock.
+    reg fclk = 0;
+    always #3.968 fclk = ~fclk;
+    wire clk;
+    CLKDIV #(.DIV_MODE("5")) u_div (.CLKOUT(clk), .HCLKIN(fclk), .RESETN(1'b1), .CALIB(1'b0));
     reg rst_n = 0;
     reg [7:0] adc = 100;
     wire adc_clk, wr_en, line_done, vsync_pulse, locked;
     wire [10:0] wr_addr;
     wire [23:0] rgb;
     wire [7:0] black;
-    ntsc_capture dut (
-        .clk_cap(clk), .rst_n(rst_n), .adc_d(adc), .adc_otr(1'b0),
-        .adc_clk(adc_clk), .adc_clamp(), .phase_sel(3'd2), .gain_sel(2'd0),
+    ntsc_capture #(.ADC_WIN_W(10)) dut (
+        .clk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc), .adc_otr(1'b0),
+        .adc_clk(adc_clk), .adc_clamp(), .rot_sel(4'd0), .gain_sel(2'd0),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(rgb), .wr_bank(),
         .line_done(line_done), .vsync_pulse(vsync_pulse), .sync_locked(locked),
         .black_out(black), .dmp_ack(1'b0)
@@ -37,7 +42,8 @@ module ntsc_video_tb;
             bb = (idx == 0 || idx == 2 || idx == 4 || idx == 6) ? 191 : 0;
         end
     endtask
-    // Set ADC data at its rising clock edge. Phase 2 samples settled data.
+    // A new code TOD_NS after each rising edge of the converter's clock; the
+    // decoder's calibration has to find where that lands.
     always @(posedge adc_clk) if (rst_n) begin
         // Shift one line late and retain that phase, as at a recording seam
         // or source timing jump. Subsequent lines must not be rejected just
@@ -67,7 +73,7 @@ module ntsc_video_tb;
             value = 100 + 90.0/255.0*(yy + (MONO ? 0.0 :
                                                  uu*$sin(phase)+vv*$cos(phase)));
         end
-        adc <= $rtoi(value+0.5);
+        adc <= #(TOD_NS) $rtoi(value+0.5);
         n = n + 1;
     end
     always @(negedge clk) if (rst_n) begin

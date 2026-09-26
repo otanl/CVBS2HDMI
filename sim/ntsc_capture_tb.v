@@ -27,7 +27,6 @@ module ntsc_capture_tb;
 
     parameter         WEAK  = 1'b0;    // 1 = use the flattened-sync stimulus
     parameter integer LINES = 400;     // how many lines to replay
-    parameter [2:0]   PHASE = 3'd2;
     parameter TRACE = 0;
     // Forwarded to the DUT so a sweep is a shell loop over -P.
     parameter integer Q_QUALIFY   = 88;
@@ -39,24 +38,22 @@ module ntsc_capture_tb;
 
     reg [7:0] stim [0:NSAMP-1];
 
-    reg clk = 1'b0;
-    always #3.968 clk = ~clk;          // 126 MHz
+    // 126 MHz and the pixel clock divided from it, as on the board.
+    reg fclk = 1'b0;
+    always #3.968 fclk = ~fclk;
+    wire clk;
+    CLKDIV #(.DIV_MODE("5")) u_div (.CLKOUT(clk), .HCLKIN(fclk), .RESETN(1'b1), .CALIB(1'b0));
 
     reg        rst_n = 1'b0;
     reg [7:0]  adc_d = 8'd0;
     wire       adc_clk;
     integer    idx = 0;
 
-    // Advance the stimulus once per ADC clock so every sampling phase sees a
-    // settled bus.  The real board has a round trip that makes the phase
-    // matter; that is a board property and not what this bench is for.
-    reg adc_clk_d = 1'b0;
-    always @(posedge clk) begin
-        adc_clk_d <= adc_clk;
-        if (adc_clk && !adc_clk_d) begin
-            adc_d <= stim[idx];
-            idx   <= (idx == NSAMP-1) ? 0 : idx + 1;
-        end
+    // One recorded sample per conversion, 10 ns after the converter's clock
+    // rises; the decoder's calibration finds where that lands.
+    always @(posedge adc_clk) begin
+        adc_d <= #10 stim[idx];
+        idx   <= (idx == NSAMP-1) ? 0 : idx + 1;
     end
 
     wire [15:0] real_count, force_count, qual_count, run_min, run_max;
@@ -68,12 +65,12 @@ module ntsc_capture_tb;
 
     ntsc_capture #(
         .QUALIFY(Q_QUALIFY), .THR_SHIFT(Q_THR_SHIFT), .VS_MIN(Q_VS_MIN),
-        .RELEASE(Q_RELEASE)
+        .RELEASE(Q_RELEASE), .ADC_WIN_W(10)
     ) dut (
-        .clk_cap(clk), .rst_n(rst_n),
+        .clk(clk), .fclk(fclk), .rst_n(rst_n),
         .adc_d(adc_d), .adc_otr(1'b0),
         .adc_clk(adc_clk), .adc_clamp(),
-        .phase_sel(PHASE), .gain_sel(2'd0),
+        .rot_sel(4'd0), .gain_sel(2'd0),
         .wr_en(), .wr_addr(), .wr_data(), .wr_bank(),
         .line_done(), .vsync_pulse(vsync_pulse),
         .sync_locked(sync_locked), .lock_level(lock_level),
@@ -101,19 +98,19 @@ module ntsc_capture_tb;
         if (WEAK) $readmemh("sim/ntsc_25msps_weaksync.hex", stim);
         else      $readmemh("sim/ntsc_25msps.hex", stim);
 
-        repeat (20) @(posedge clk);
+        repeat (100) @(posedge fclk);
         rst_n = 1'b1;
 
         // Let acquisition finish before measuring: the counters include every
         // line since reset, and a hundred lines of hunting would otherwise be
         // charged against the steady state.
-        repeat (100 * 1603 * 5) @(posedge clk);
+        repeat (100 * 1603) @(posedge clk);
         settle_real  = real_count;
         settle_force = force_count;
         settle_qual  = qual_count;
         vs_settle    = vs_count;
 
-        repeat (LINES * 1603 * 5) @(posedge clk);
+        repeat (LINES * 1603) @(posedge clk);
 
         $display("stimulus=%s QUALIFY=%0d THR_SHIFT=%0d VS_MIN=%0d",
                  WEAK ? "weak" : "full", Q_QUALIFY, Q_THR_SHIFT, Q_VS_MIN);

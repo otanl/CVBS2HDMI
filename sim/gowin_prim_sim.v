@@ -118,17 +118,20 @@ module IDDR (input wire D, input wire CLK, output reg Q0 = 1'b0, output reg Q1 =
 endmodule
 
 // ODDR: D0 in the first half of the clock, D1 in the second; Q1 carries TX
-// for a tristate buffer.  The ADC clock drives both with the same value.
+// for a tristate buffer.  Q0 is a register on both edges, so a word whose
+// halves differ does not produce a zero-width glitch at the rising edge (a
+// combinational CLK ? r0 : r1 briefly shows the old r0 there).
 module ODDR (input wire D0, input wire D1, input wire TX, input wire CLK,
              output wire Q0, output wire Q1);
     parameter TXCLK_POL = 0;
     parameter INIT = 0;
-    reg r0 = 1'b0, r1 = 1'b0;
+    reg q = 1'b0, d1_hold = 1'b0;
     always @(posedge CLK) begin
-        r0 <= D0;
-        r1 <= D1;
+        q       <= D0;
+        d1_hold <= D1;
     end
-    assign Q0 = CLK ? r0 : r1;
+    always @(negedge CLK) q <= d1_hold;
+    assign Q0 = q;
     assign Q1 = TX;
 endmodule
 

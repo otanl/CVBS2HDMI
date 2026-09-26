@@ -78,8 +78,13 @@ module burst_nco #(
     output reg  signed [15:0] burst_q,
     output reg         locked,
     output reg  [7:0]  good_lines,
-    output wire [31:0] phase_ref
+    output wire [31:0] phase_ref,
+    // Diagnostics: the CORDIC's last angle, and the tracked burst angle.
+    output wire [31:0] dbg_angle,
+    output wire [31:0] dbg_off,
+    output wire        dbg_angle_new
 );
+
     wire [31:0] phase_c = phase + 32'h4000_0000;
 
     localparam [7:0] DEG60  = 8'd43;
@@ -104,7 +109,15 @@ module burst_nco #(
     wire signed [15:0] i_scaled = i_acc >>> 6;
     wire signed [15:0] q_scaled = q_acc >>> 6;
     wire signed [7:0] lut_cosine, lut_sine;
-    reg signed [7:0] i_weight, q_weight;
+    // Straight from the current phase, not registered: the sample on this
+    // clock was taken at this phase.  A register here lags the phase by a
+    // clock, which at five clocks per sample was invisible and at one sample
+    // per clock pairs every sample with the previous sample's phase -- 51
+    // degrees against the demodulator, which pairs them correctly.
+    wire signed [7:0] i_weight = SINE_REF ? lut_cosine
+                               : (ci_pos ? 8'sd64 : ci_neg ? -8'sd64 : 8'sd0);
+    wire signed [7:0] q_weight = SINE_REF ? lut_sine
+                               : (cq_pos ? 8'sd64 : cq_neg ? -8'sd64 : 8'sd0);
     reg signed [8:0] sample_centred;
     reg signed [7:0] sample_i_weight, sample_q_weight;
     reg signed [17:0] i_product, q_product;
@@ -113,6 +126,15 @@ module burst_nco #(
                                 .cosine(lut_cosine), .sine(lut_sine));
     reg               gate_d;
     wire              gate_fall = gate_d && !burst_gate;
+    // The gate's fall is acted on three clocks after it is seen, whatever the
+    // sample rate.  The last gated sample's product takes two clocks to reach
+    // the accumulators and a third to reach sum_r/mag_r; with five clocks per
+    // sample that had always happened by the next strobe, and at one sample
+    // per clock it has not.  Acting on a clock count rather than on a strobe
+    // makes both correct.
+    reg  [2:0]        fall_d;
+    wire              proc = fall_d[2];
+    wire [31:0]       step_now = sample_en ? inc : 32'd0;
 
     wire signed [15:0] i_abs = i_scaled[15] ? -i_scaled : i_scaled;
     wire signed [15:0] q_abs = q_scaled[15] ? -q_scaled : q_scaled;
@@ -165,8 +187,8 @@ module burst_nco #(
     // degrees.  A mean, not a run of large misses: in the three-cycle one line
     // in three lands close, and a run count never completes.  (Magnitude by
     // the sign bit and unsigned compares: no signed comparison, apicula#541.)
-    // At 126 MHz it takes a stage of its own: the miss's top byte is registered
-    // with the update and judged a clock later, off the tracking path.
+    // The miss's top byte is registered with the update and judged a clock
+    // later, off the tracking path -- a stage of its own, which 126 MHz needed.
     wire         [7:0] miss_now  = track_err[31] ? (8'd0 - track_err[31:24]) : track_err[31:24];
     reg          [7:0] miss_r;
     reg                miss_pend;
@@ -225,13 +247,13 @@ module burst_nco #(
             inc        <= INC_NOM;
             i_acc      <= 16'sd0;
             q_acc      <= 16'sd0;
-            i_weight <= 0; q_weight <= 0;
             sample_centred <= 0; sample_i_weight <= 0; sample_q_weight <= 0;
             input_pending <= 0;
             i_product <= 0; q_product <= 0; product_pending <= 0;
             burst_i    <= 16'sd0;
             burst_q    <= 16'sd0;
             gate_d     <= 1'b0;
+            fall_d     <= 3'd0;
             good_lines <= 8'd0;
             err_sum    <= 20'sd0;
             avg_cnt    <= 8'd0;
@@ -253,14 +275,14 @@ module burst_nco #(
             sum_r <= 20'sd0; mag_r <= 17'd0;
             inc_next_r <= 33'sd0; inc_pend <= 1'b0;
         end else begin
-            i_weight <= SINE_REF ? lut_cosine : (ci_pos ? 8'sd64 : ci_neg ? -8'sd64 : 8'sd0);
-            q_weight <= SINE_REF ? lut_sine : (cq_pos ? 8'sd64 : cq_neg ? -8'sd64 : 8'sd0);
             // Subtraction plus a LUT multiplier missed 126 MHz (118.4 MHz
             // routed). There are five clocks per sample, so separate them.
             // Latch BOTH operands on the original strobe: continuously
             // registering centred alone would select a different ADC phase.
-            input_pending <= sample_en && burst_gate;
-            product_pending <= input_pending;
+            // A restart also drops whatever is still in the pipeline, and the
+            // sample taken with it: all of it was gated on the old timing.
+            input_pending <= sample_en && burst_gate && !gate_restart;
+            product_pending <= input_pending && !gate_restart;
             if (sample_en && burst_gate) begin
                 sample_centred <= centred;
                 sample_i_weight <= i_weight;
@@ -271,8 +293,6 @@ module burst_nco #(
                 q_product <= sample_centred * sample_q_weight;
             end
             if (gate_restart) begin
-                // Every product of an earlier sample has already landed: they
-                // take three clocks and samples are five apart.
                 i_acc <= 24'sd0;
                 q_acc <= 24'sd0;
             end else if (product_pending) begin
@@ -389,8 +409,10 @@ module burst_nco #(
             // 180 on a standard one -- and a gap is no evidence against it.
             // Only the absolute phase goes stale, so only that is re-measured.
             if (burst_age == TRACK_GAP_SAMPLES[17:0]) gap_resync <= 1'b1;
+            end
 
-            if (gate_fall) begin
+            fall_d <= {fall_d[1:0], sample_en && gate_fall};
+            if (proc) begin
                 burst_i <= i_scaled;
                 burst_q <= q_scaled;
                 i_acc   <= 16'sd0;
@@ -399,13 +421,13 @@ module burst_nco #(
                 if (mag_r >= MAG_MIN) begin
                     burst_age <= 18'd0;
                     cordic_start <= 1'b1;
-                    correlation_adjust <= SNAP_PER_LINE ? (SNAP_PHASE - phase - inc)
+                    correlation_adjust <= SNAP_PER_LINE ? (SNAP_PHASE - phase - step_now)
                         : ((avg_cnt == ((1 << AVG_LOG2) - 1)) ? phase_adj : 32'd0);
                     if (avg_cnt == ((1 << AVG_LOG2) - 1)) begin
                         avg_cnt <= 8'd0;
                         err_sum <= 20'sd0;
                         phase   <= SNAP_PER_LINE ? SNAP_PHASE
-                                                 : (phase + inc + phase_adj);
+                                                 : (phase + step_now + phase_adj);
                         inc_pend <= 1'b1;
                     end else begin
                         avg_cnt <= avg_cnt + 8'd1;
@@ -419,9 +441,11 @@ module burst_nco #(
 
                 locked <= (good_lines >= LOCK_LINES);
             end
-            end
         end
     end
+    assign dbg_angle     = sect_r;
+    assign dbg_off       = burst_off;
+    assign dbg_angle_new = cordic_done;
 endmodule
 
 `default_nettype wire

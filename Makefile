@@ -197,7 +197,7 @@ sim: | $(BUILD_STAMP)
 # from the command line, e.g.
 #   make sim-capture SIMARGS="-Pntsc_capture_tb.Q_QUALIFY=110"
 SIMARGS ?=
-CAPTURE_SIM_RTL := src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v
+CAPTURE_SIM_RTL := src/ntsc_capture.v src/adc_front.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v
 sim-capture: | $(BUILD_STAMP)
 	$(TOOL) iverilog -g2012 -s ntsc_capture_tb -o build/ntsc_capture_tb $(SIMARGS) \
 		$(CAPTURE_SIM_RTL) sim/ntsc_capture_tb.v
@@ -302,7 +302,7 @@ hdmi640-program: $(HDMI640_BITSTREAM)
 
 # --- NTSC-J in, colour 640x480p HDMI out ---------------------------------
 NTSC_TOP       := top_ntsc_hdmi
-NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/line_buffer.v \
+NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/adc_front.v src/line_buffer.v \
                   src/video_line_store.v src/chroma_sincos.v \
                   src/sync_lpf.v src/burst_nco.v src/cordic_atan.v \
                   src/video_timing.v src/hdmi_out.v src/tmds_encoder.v \
@@ -324,19 +324,26 @@ $(NTSC_CST): $(PROBE_CONSTRAINTS) $(HDMI_CONSTRAINTS) | $(BUILD_STAMP)
 # -nodsp: the luma gain multiply otherwise lands in a MULT9X9 that Apicula
 # cannot pack (KeyError 'IRBY_IREG0BL_0').  It is a multiply by a constant, so
 # LUT logic is the right implementation anyway.
+# -noalu: no ALU carry cells at all.  Designs with a few thousand of them
+# compute wrongly on this part depending on placement (Apicula #514, open), and
+# this one had about 4300.  LUT adders are slower, which is why the decoder
+# moved from 126 MHz to the 25.2 MHz pixel clock: at one sample per clock it
+# has five times the time per operation.
+NTSC_SYNTH := synth_gowin -nodsp -noalu
 $(NTSC_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 # The SDC constrains the 126 MHz capture domain and 25.2 MHz pixel domain.
 # Placement affects margin; always require the final routed timing check.
 # A different seed requires rebuilding the PNR target (make -B ntsc).
-# Seed 5, chosen by measurement on the board once burst tracking was turned
-# off (2026-09-26): seeds 1..8 of this netlist, whole-line hue rotation rms
-# 0.7 (seed 5, three loads: 0.6..0.8), 3.4, 12, 21, 33, 37, 38 and 49 deg; seed
-# 5's bar hues -9..+8 deg.  Every seed repeats itself across loads.  Apicula's
-# ALU bug (CLAUDE.md), so a seed is part of the build.  169.6 MHz.  Re-measure
-# after any RTL change, over more than one load.
-NTSC_SEED ?= 5
+# Any seed works: the decoder has no ALU cells and its converter read is
+# calibrated.  Seeds 1..8 measured 2026-09-26 on one M5 boot: every one read
+# whole-line hue rotation 0.5 deg rms and identical bar hues, calibration
+# settled once; seeds 3, 5 and 8 reloaded read the same.  The 126 MHz design
+# spread 0.7..49 deg over eight seeds (CLAUDE.md).  Seed 3 is the one make
+# ntsc reproduces byte for byte.  Load a build more than once before crediting
+# or blaming a seed.
+NTSC_SEED ?= 3
 $(NTSC_PNR): $(NTSC_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $(NTSC_NETLIST) --write $@ --device $(DEVICE) \
 		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
@@ -376,7 +383,7 @@ NTSC_LEGACY_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_legacy.fs
 ntsc-legacy: $(NTSC_LEGACY_BITSTREAM)
 
 $(NTSC_LEGACY_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 1 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set LEGACY_TIMING 1 $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 $(NTSC_LEGACY_PNR): $(NTSC_LEGACY_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -387,6 +394,30 @@ $(NTSC_LEGACY_BITSTREAM): $(NTSC_LEGACY_PNR) scripts/gowin_pack_io.py
 	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
 
 ntsc-legacy-program: $(NTSC_LEGACY_BITSTREAM)
+	$(TOOL) openFPGALoader -b $(BOARD) $<
+
+# The converter interface's per-bit diagnostic: calibration off, rotation
+# stepping 0..9 every 0.67 s, and each bit's rising/falling-read disagreement
+# in the strip.  Read with scripts/adc_diag.py, which records a few seconds of
+# the strip as video.  This is how the bottom-bank bits were found.
+NTSC_ADCDIAG_NETLIST := $(BUILD_DIR)/$(NTSC_TOP)_adcdiag.json
+NTSC_ADCDIAG_PNR := $(BUILD_DIR)/$(NTSC_TOP)_adcdiag_pnr.json
+NTSC_ADCDIAG_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_adcdiag.fs
+.PHONY: ntsc-adcdiag ntsc-adcdiag-program
+ntsc-adcdiag: $(NTSC_ADCDIAG_BITSTREAM)
+
+$(NTSC_ADCDIAG_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set ADC_DIAG 1 $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
+
+$(NTSC_ADCDIAG_PNR): $(NTSC_ADCDIAG_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
+	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--freq 27 --sdc constraints/tangnano20k_ntsc.sdc --seed $(NTSC_SEED) \
+		--vopt family=$(FAMILY) --vopt cst=$(NTSC_CST)
+
+$(NTSC_ADCDIAG_BITSTREAM): $(NTSC_ADCDIAG_PNR) scripts/gowin_pack_io.py
+	$(GOWIN_PACK) -d $(FAMILY) -o $@ $<
+
+ntsc-adcdiag-program: $(NTSC_ADCDIAG_BITSTREAM)
 	$(TOOL) openFPGALoader -b $(BOARD) $<
 
 # Start in the existing HDMI oscilloscope view, without relying on UART.
@@ -402,7 +433,7 @@ NTSC_SCOPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_scope_p$(NTSC_SCOPE_PHASE)r$(NT
 ntsc-scope: $(NTSC_SCOPE_BITSTREAM)
 
 $(NTSC_SCOPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) -set SCOPE_FREERUN $(NTSC_SCOPE_FREERUN) $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set SCOPE_ONLY 1 -set SCOPE_FULL_RANGE 1 -set DEFAULT_PHASE $(NTSC_SCOPE_PHASE) -set SCOPE_TEST_RAMP $(NTSC_SCOPE_RAMP) -set SCOPE_FREERUN $(NTSC_SCOPE_FREERUN) $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 $(NTSC_SCOPE_PNR): $(NTSC_SCOPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -425,7 +456,7 @@ NTSC_TAPE_BITSTREAM := $(BUILD_DIR)/$(NTSC_TOP)_tape.fs
 ntsc-tape: $(NTSC_TAPE_BITSTREAM)
 
 $(NTSC_TAPE_NETLIST): $(NTSC_RTL) | $(BUILD_STAMP)
-	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set TAPE 1 $(NTSC_TOP); synth_gowin -nodsp -top $(NTSC_TOP) -json $@"
+	$(TOOL) yosys -p "read_verilog $(NTSC_RTL); chparam -set TAPE 1 $(NTSC_TOP); $(NTSC_SYNTH) -top $(NTSC_TOP) -json $@"
 
 $(NTSC_TAPE_PNR): $(NTSC_TAPE_NETLIST) $(NTSC_CST) constraints/tangnano20k_ntsc.sdc
 	$(TOOL) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
@@ -447,7 +478,7 @@ check-tools:
 	@echo "All required tools are available."
 
 .PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun sim-tape check-signed test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -469,6 +500,29 @@ sim-tape: | $(BUILD_STAMP)
 	$(TOOL) vvp $(BUILD_DIR)/tape_tb
 	python3 scripts/tape_decode.py $(BUILD_DIR)/tape_tb_decoded.hex $(BUILD_DIR)/tape_tb.ppm
 	cmp $(BUILD_DIR)/tape_tb_decoded.hex $(BUILD_DIR)/tape_tb_mem.hex
+
+.PHONY: sim-adc-front
+# Calibration across a whole conversion period of output delay, a switching
+# window a third of a period wide, drift in both directions (small enough to
+# ride out, and large enough to force a re-sweep), the production window
+# length, the negative control -- at 20 ns, rotation 4 puts the read inside
+# the switching window and must not come back clean -- and bits 0, 1, 4, 5
+# glitching as on the board, where the calibration must settle on one sweep.
+# Fields: TOD SWITCH AUTO rotation EXPECT_BAD DRIFT WIN_W [NOISY]
+sim-adc-front: | $(BUILD_STAMP)
+	@for cfg in "0 5000 1 0 0 0 12" "8000 5000 1 0 0 0 12" "16000 5000 1 0 0 0 12" \
+	            "24000 5000 1 0 0 0 12" "32000 5000 1 0 0 0 12" "38000 5000 1 0 0 0 12" \
+	            "20000 14000 1 0 0 0 12" "20000 5000 1 0 0 6000 12" "20000 5000 1 0 0 -14000 12" \
+	            "28000 5000 1 0 0 0 14" "20000 5000 0 4 1 0 12" \
+	            "12000 5000 1 0 0 0 12 1" "30000 5000 1 0 0 0 12 1"; do \
+		set -- $$cfg; \
+		$(TOOL) iverilog -g2012 -s adc_front_tb -Padc_front_tb.TOD=$$1 -Padc_front_tb.SWITCH=$$2 \
+			-Padc_front_tb.AUTO=$$3 -Padc_front_tb.MANUAL=$$4 -Padc_front_tb.EXPECT_BAD=$$5 \
+			-Padc_front_tb.DRIFT=$$6 -Padc_front_tb.WIN_W=$$7 -Padc_front_tb.NOISY=$${8:-0} \
+			-o $(BUILD_DIR)/adc_front_tb src/adc_front.v sim/gowin_prim_sim.v sim/adc_front_tb.v || exit $$?; \
+		$(TOOL) vvp -n $(BUILD_DIR)/adc_front_tb > $(BUILD_DIR)/adc_front_tb.log; rc=$$?; \
+		grep -E '^adc_front|FATAL' $(BUILD_DIR)/adc_front_tb.log; test $$rc -eq 0 || exit 1; \
+	done
 
 .PHONY: sim-scope-freerun
 sim-scope-freerun: | $(BUILD_STAMP)

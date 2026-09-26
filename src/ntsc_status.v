@@ -47,7 +47,7 @@ module ntsc_status #(
     input  wire [7:0]   s_max,
     input  wire [7:0]   s_thr,
     input  wire [1:0]   gain_sel,
-    input  wire [2:0]   phase_sel,
+    input  wire [3:0]   phase_sel,
     input  wire [255:0] hist_flat,
     // Raw dump, emitted after the status line whenever one is ready.
     input  wire         dmp_rdy,
@@ -83,7 +83,7 @@ module ntsc_status #(
     reg [1:0]   g_rep;
     reg [7:0]   ll_rep;
     reg [15:0]  rc_rep;
-    reg [2:0]   ph_rep;
+    reg [3:0]   ph_rep;
     reg [15:0]  per_rep;
     reg [7:0]   blk_rep, smin_rep, smax_rep, sthr_rep;
     reg [255:0] hist_lat;
@@ -93,7 +93,7 @@ module ntsc_status #(
         if (!rst_n) begin
             win <= 25'd0; f_acc <= 8'd0; l_acc <= 20'd0;
             f_rep <= 8'd0; l_rep <= 20'd0; lk_rep <= 1'b0; sl_rep <= 1'b0;
-            per_rep <= 16'd0; blk_rep <= 8'd0; g_rep <= 2'd0; ph_rep <= 3'd0;
+            per_rep <= 16'd0; blk_rep <= 8'd0; g_rep <= 2'd0; ph_rep <= 4'd0;
             smin_rep <= 8'd0; smax_rep <= 8'd0; sthr_rep <= 8'd0; hist_lat <= 256'd0; start <= 1'b0;
         end else begin
             start <= 1'b0;
@@ -232,7 +232,7 @@ module ntsc_status #(
                         7'd45: tx_data <= hexchar(blk_rep[7:4]);
                         7'd46: tx_data <= hexchar(blk_rep[3:0]);
                         7'd50: tx_data <= hexchar({2'd0, g_rep});
-                        7'd55: tx_data <= hexchar({1'd0, ph_rep});
+                        7'd55: tx_data <= hexchar(ph_rep);
                         7'd59: tx_data <= hexchar(smin_rep[7:4]);
                         7'd60: tx_data <= hexchar(smin_rep[3:0]);
                         7'd62: tx_data <= hexchar(smax_rep[7:4]);

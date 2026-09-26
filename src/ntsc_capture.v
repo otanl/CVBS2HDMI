@@ -1,6 +1,8 @@
 `default_nettype none
 
-// AD9280 NTSC-J decoder, 126 MHz capture clock / 25.2 MSPS ADC.
+// AD9280 NTSC-J decoder on the 25.2 MHz pixel clock, one sample per clock.
+// 126 MHz reaches only the converter's clock (adc_front); nothing else runs
+// there, so the whole decoder builds without ALU cells (Apicula #514).
 // Pulse-width-qualified H/V sync, digital back-porch restoration, seven-tap
 // Y/C separation, burst-referenced quadrature demodulation and RGB output.
 // Windows use samples from the sync leading edge; LEGACY_TIMING retains
@@ -75,9 +77,14 @@ module ntsc_capture #(
     // 0 keeps phase_sel, which is what the ADC probe and the benches that
     // predate this used.
     parameter         AUTO_PHASE   = 1'b1,
+    // adc_front's counting window, 2^ADC_WIN_W samples.  Benches shorten it.
+    parameter integer ADC_WIN_W    = 14,
+    parameter         ADC_CLK_SWAP = 1'b0,   // adc_front's CLK_D1_FIRST
+    parameter         ADC_DIAG     = 1'b0,   // adc_front's DIAG
     parameter         COLOUR       = 1'b1
 ) (
-    input  wire        clk_cap,        // TMDS serial clock, 126 MHz
+    input  wire        clk,            // pixel clock, 25.2 MHz, one sample each
+    input  wire        fclk,           // 126 MHz, the converter's clock only
     input  wire        rst_n,
 
     input  wire [7:0]  adc_d,
@@ -85,8 +92,27 @@ module ntsc_capture #(
     output wire        adc_clk,
     output wire        adc_clamp,
 
-    input  wire [2:0]  phase_sel,
-    output wire [2:0]  phase_in_use,  // in phase_sel's numbering
+    input  wire [3:0]  rot_sel,       // converter clock rotation, AUTO_PHASE off
+    output wire [3:0]  rot_in_use,
+    output wire        adc_cal_done,
+    output wire [5:0]  adc_sweeps,
+    output wire        adc_pair_x,
+    output wire [15:0] adc_track,
+    input  wire [3:0]  adc_dbg_rot,
+    output wire [15:0] adc_dbg_cx,
+    output wire [15:0] adc_dbg_cy,
+    input  wire [2:0]  adc_dbg_bit,
+    output wire [15:0] adc_dbg_bx,
+    output wire [15:0] adc_dbg_by,
+    // One line a field, all from that line: the burst correlation, the
+    // CORDIC's angle for it, whether that angle is fresh, and the tracked
+    // burst angle.  Checking the angle against atan2 of its own inputs
+    // offline says which stage of the colour path computes wrongly.
+    output reg  [15:0] dbg_line_i,
+    output reg  [15:0] dbg_line_q,
+    output reg  [31:0] dbg_line_angle,
+    output reg  [31:0] dbg_line_off,
+    output reg         dbg_line_fresh,
     input  wire [1:0]  gain_sel,
 
     output reg         wr_en,
@@ -94,8 +120,8 @@ module ntsc_capture #(
     output reg  [23:0] wr_data,
     output reg         wr_bank,
 
-    output reg         line_done,     // one clk_cap pulse at end of each line
-    output reg         vsync_pulse,   // one clk_cap pulse per field
+    output reg         line_done,     // one clk pulse at end of each line
+    output reg         vsync_pulse,   // one clk pulse per field
     output wire        sync_locked,
     output wire [7:0]  lock_level,    // how close to lock, 0..255; 64 locks
     output reg  [15:0] real_count,
@@ -124,157 +150,30 @@ module ntsc_capture #(
     output wire [7:0]  black_out,
     output wire [255:0] hist_flat
 );
-    reg [2:0] phase, phase_r;
-    reg [7:0] adc_r;
-    reg       otr_r;
+    // The converter's interface and its read timing: see adc_front.
+    wire [7:0] adc_r;
+    reg        otr_r;
+    wire [ADC_WIN_W:0] adc_track_w;
+    assign adc_track = adc_track_w;   // WIN_W <= 15
+    wire [ADC_WIN_W:0] adc_dbg_cx_w, adc_dbg_cy_w, adc_dbg_bx_w, adc_dbg_by_w;
+    assign adc_dbg_bx = adc_dbg_bx_w;
+    assign adc_dbg_by = adc_dbg_by_w;
+    assign adc_dbg_cx = adc_dbg_cx_w;
+    assign adc_dbg_cy = adc_dbg_cy_w;
+    adc_front #(.AUTO(AUTO_PHASE), .WIN_W(ADC_WIN_W), .CLK_D1_FIRST(ADC_CLK_SWAP),
+                .DIAG(ADC_DIAG)) u_adc (
+        .pclk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_clk(adc_clk),
+        .manual_rot(rot_sel), .sample(adc_r), .rot_in_use(rot_in_use),
+        .cal_done(adc_cal_done), .sweeps(adc_sweeps), .pair_x(adc_pair_x),
+        .track_count(adc_track_w),
+        .dbg_rot(adc_dbg_rot), .dbg_cx(adc_dbg_cx_w), .dbg_cy(adc_dbg_cy_w),
+        .dbg_bit(adc_dbg_bit), .dbg_bx(adc_dbg_bx_w), .dbg_by(adc_dbg_by_w)
+    );
+    always @(posedge clk) otr_r <= adc_otr;   // a diagnostic only
 
-    // The converter's clock goes out, and its data comes in, through registers
-    // in the pins' own IO logic.  With fabric registers both paths ran through
-    // the router, so every placement moved the read instant against the
-    // converter's output by a few nanoseconds -- against read points 7.9 ns
-    // apart, enough that one build decoded colour and the next did not, from
-    // the same RTL.  The IO registers' timing is fixed by the silicon.
-    wire [7:0] adc_io;
-    genvar     bi;
-    generate
-        for (bi = 0; bi < 8; bi = bi + 1) begin : g_adc_in
-            IDDR u_in (.D(adc_d[bi]), .CLK(clk_cap), .Q0(adc_io[bi]), .Q1());
-        end
-    endgenerate
-    wire adc_clk_next = (phase == 3'd4) || (phase == 3'd0);
-    ODDR u_adc_clk (.D0(adc_clk_next), .D1(adc_clk_next), .TX(1'b0),
-                    .CLK(clk_cap), .Q0(adc_clk), .Q1());
-
-    wire [2:0] sel_index = (phase_sel == 3'd0) ? 3'd4 : (phase_sel - 3'd1);
-    reg  [2:0] auto_cap;
-    reg        auto_valid;
-    wire [2:0] cap_index = (AUTO_PHASE && auto_valid) ? auto_cap : sel_index;
-    assign phase_in_use = (cap_index == 3'd4) ? 3'd0 : cap_index + 3'd1;
-
-    always @(posedge clk_cap or negedge rst_n) begin
-        if (!rst_n) begin
-            phase <= 3'd0; phase_r <= 3'd0; adc_r <= 8'd0;
-            otr_r <= 1'b0;
-        end else begin
-            phase     <= (phase == 3'd4) ? 3'd0 : phase + 3'd1;
-            phase_r   <= phase;
-            adc_r     <= adc_io;
-            otr_r     <= adc_otr;
-        end
-    end
-
-    wire sample_stb = (phase_r == cap_index);
-
-    // Sampling-instant calibration.
-    //
-    // adc_d is read every 126 MHz clock, five times per conversion, and one of
-    // those five is used.  Which one is safe depends on the round trip -- the
-    // clock out through the fabric and the pins, the AD9280's output delay,
-    // the data back in -- and that changes with every placement.  A fixed
-    // choice therefore works in one build and not the next, and when it lands
-    // inside the converter's output switching window it fails in the worst
-    // way to diagnose: flat areas still decode, because consecutive samples
-    // agree in their upper bits and the luma filter averages the rest, while
-    // the burst, which swings 65 codes every sample, is corrupted on every
-    // line.  The picture keeps its brightness and loses its colour.
-    //
-    // So measure it.  Count, per phase, how often the data read differs from
-    // the previous clock's: a change first seen at phase s means the output
-    // switched just before that read.  Reading at s is then risky in
-    // proportion to the changes seen at s and at s+1, and the quietest point
-    // minimises n[s-1] + 2 n[s] + 2 n[s+1] + n[s+2].  Re-evaluated every 4 ms,
-    // and only moved when the current choice is measurably worse, so it does
-    // not wander between two equally good phases.
-    reg  [7:0]  adc_prev;
-    reg         adc_changed;
-    reg  [2:0]  chg_phase;
-    reg  [15:0] chg_cnt  [0:4];
-    reg  [15:0] chg_snap [0:4];
-    reg  [16:0] cal_pair [0:4];   // n[k] + n[k+1]
-    reg  [18:0] cal_sc   [0:4];   // pair[s-1] + pair[s] + pair[s+1]
-    reg  [18:0] cal_win;
-    reg  [3:0]  cal_step;         // 0 idle, 1 pairs, 2 scores, 3..7 search, 8..10 decide
-    reg  [18:0] best_score, cur_score, chg_total, cal_thresh, cand;
-    reg  [2:0]  best_s, cand_s;
-    reg         cand_v;
-    integer     ci;
-    // Spread over clocks -- it runs every 4 ms -- with fixed indices wherever
-    // possible; done in one clock it was the slowest path in the design.
-    wire [2:0]  cal_s   = cal_step[2:0] - 3'd3;
-    wire [18:0] cal_cur = cal_sc[cal_s];
-    always @(posedge clk_cap or negedge rst_n) begin
-        if (!rst_n) begin
-            adc_prev <= 8'd0; adc_changed <= 1'b0; chg_phase <= 3'd0;
-            cal_win <= 19'd0; cal_step <= 4'd0;
-            best_score <= 19'h7FFFF; cur_score <= 19'd0; best_s <= 3'd0;
-            cal_thresh <= 19'd0; cand <= 19'd0; cand_s <= 3'd0; cand_v <= 1'b0;
-            chg_total <= 19'd0; auto_cap <= 3'd0; auto_valid <= 1'b0;
-            for (ci = 0; ci < 5; ci = ci + 1) begin
-                chg_cnt[ci] <= 16'd0; chg_snap[ci] <= 16'd0;
-                cal_pair[ci] <= 17'd0; cal_sc[ci] <= 19'd0;
-            end
-        end else begin
-            adc_prev    <= adc_r;
-            adc_changed <= (adc_r != adc_prev);
-            chg_phase   <= phase_r;
-            cal_win     <= cal_win + 19'd1;
-            if (&cal_win) begin
-                for (ci = 0; ci < 5; ci = ci + 1) begin
-                    chg_snap[ci] <= chg_cnt[ci];
-                    chg_cnt[ci]  <= 16'd0;
-                end
-                cal_step <= 4'd1;
-            end else if (adc_changed && chg_cnt[chg_phase] != 16'hFFFF) begin
-                chg_cnt[chg_phase] <= chg_cnt[chg_phase] + 16'd1;
-            end
-            // A candidate is fetched one clock and compared the next, so no
-            // clock carries both a 5-way mux and a 19-bit compare.
-            cand_v <= 1'b0;
-            if (cand_v) begin
-                if (cand < best_score) begin
-                    best_score <= cand;
-                    best_s     <= cand_s;
-                end
-                if (cand_s == cap_index) cur_score <= cand;
-            end
-            case (cal_step)
-            4'd0: ;
-            4'd1: begin
-                for (ci = 0; ci < 5; ci = ci + 1)
-                    cal_pair[ci] <= {1'b0, chg_snap[ci]} + {1'b0, chg_snap[(ci+1)%5]};
-                cal_step <= 4'd2;
-            end
-            4'd2: begin
-                for (ci = 0; ci < 5; ci = ci + 1)
-                    cal_sc[ci] <= {2'd0, cal_pair[(ci+4)%5]} + {2'd0, cal_pair[ci]}
-                                + {2'd0, cal_pair[(ci+1)%5]};
-                chg_total  <= {2'd0, cal_pair[0]} + {2'd0, cal_pair[2]} + {3'd0, chg_snap[4]};
-                best_score <= 19'h7FFFF;
-                cal_step   <= 4'd3;
-            end
-            4'd8: cal_step <= 4'd9;     // the last candidate is compared now
-            4'd9: begin
-                cal_thresh <= best_score + (chg_total >> 4);
-                cal_step   <= 4'd10;
-            end
-            4'd10: begin
-                cal_step <= 4'd0;
-                // Act only with enough transitions to mean something, and move
-                // only when the current phase is worse by a sixteenth of them.
-                if (chg_total >= 19'd256 && (!auto_valid || cur_score > cal_thresh)) begin
-                    auto_cap   <= best_s;
-                    auto_valid <= 1'b1;
-                end
-            end
-            default: begin              // 3..7: fetch candidate s = cal_step - 3
-                cand     <= cal_cur;
-                cand_s   <= cal_s;
-                cand_v   <= 1'b1;
-                cal_step <= cal_step + 4'd1;
-            end
-            endcase
-        end
-    end
+    // One sample every clock.  The name stays so the code still says which
+    // logic runs per sample; it used to be one clock in five at 126 MHz.
+    wire sample_stb = 1'b1;
 
     localparam integer CLAMP_START = 13  + LPF_DELAY;   // ~0.5 us after sync
     localparam integer CLAMP_STOP  = 101 + LPF_DELAY;   // ~4.0 us, inside the tip
@@ -315,7 +214,7 @@ module ntsc_capture #(
     reg  [11:0] ccnt_real;   // ccnt as the last real edge set it
 
     wire [7:0] adc_lp;
-    sync_lpf u_lpf (.clk(clk_cap), .rst_n(rst_n), .en(sample_stb),
+    sync_lpf u_lpf (.clk(clk), .rst_n(rst_n), .en(sample_stb),
                     .din(adc_r), .dout(adc_lp));
 
     wire       below     = (adc_lp < thr);
@@ -358,7 +257,7 @@ module ntsc_capture #(
     reg        peak_pend;
 
     reg        dmp_cap;
-    reg [22:0] dmp_arm;
+    reg [20:0] dmp_arm;   // 2^21 clocks, 83 ms between scope refreshes
     // Allow the first missing edge a margin, then coast at the learned
     // period. Adding the margin on every forced line causes cumulative drift.
     reg [15:0] free_period;
@@ -391,35 +290,41 @@ module ntsc_capture #(
     localparam [24:0] PE_NEG_LIMIT = 25'd0 - (P_BAND * 256);
     localparam [23:0] PE_POS_LIMIT = P_BAND * 256;
     reg in_late_window;
-    // These counters change only once per five clocks. Precompute the
-    // window comparisons and the fractional IIR in the intervening clocks,
-    // keeping carry chains out of the line-start/write-enable path.
-    always @(posedge clk_cap or negedge rst_n) begin
+    // At 126 MHz these were registered in the idle clocks between samples.
+    // At one sample per clock a register would lag a sample, so the compares
+    // against pcnt are combinational -- 39.7 ns is plenty -- and the period
+    // arithmetic is registered one sample *ahead*: rcnt counts up by one a
+    // sample, so the error for rcnt + 1 is exactly what the next clock's
+    // line_real needs (after a line_real the next is at least QUALIFY away).
+    // window_start and free_period move only at a line edge and are used
+    // hundreds of samples later, so a register costs nothing there.
+    wire [15:0] rcnt_ahead = (rcnt == 16'hFFFF) ? rcnt : rcnt + 16'd1;
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            period_error <= 0; period_next <= P_NOM * 256;
+            period_error <= 0;
             free_period <= P_NOM + FMARGIN;
             window_start <= P_NOM - ACC_WIN;
-            in_window <= 0; force_line <= 0; period_plausible <= 0;
-            in_late_window <= 0;
         end else begin
-            period_error <= $signed({1'b0, rcnt, 8'd0}) -
+            period_error <= $signed({1'b0, rcnt_ahead, 8'd0}) -
                             $signed({1'b0, period_avg, pfrac});
-            period_next <= {period_avg, pfrac} + period_adjust[23:0];
             free_period <= period_avg + {15'd0, extra} +
                            ((lag == 0) ? FMARGIN[15:0] : 16'd0);
             window_start <= period_avg - win_w;
-            in_window <= pcnt >= window_start;
-            // Gated on the standard-timing path so the M5 build synthesises
-            // to exactly what it did before this existed.
-            in_late_window <= !LEGACY_TIMING && (pcnt < P_WIN_NAR[15:0]);
-            force_line <= pcnt >= free_period;
-            // Both halves unsigned.  The positive one used to compare against
-            // the integer P_BAND * 256, which is signed, so the comparison
-            // was still a signed one and still exposed to apicula#541.
-            period_plausible <= period_error[24]
-                             ? (period_error >= PE_NEG_LIMIT)
-                             : (period_error[23:0] <= PE_POS_LIMIT);
         end
+    end
+    always @(*) begin
+        period_next = {period_avg, pfrac} + period_adjust[23:0];
+        in_window = pcnt >= window_start;
+        // Gated on the standard-timing path so the M5 build synthesises
+        // to exactly what it did before this existed.
+        in_late_window = !LEGACY_TIMING && (pcnt < P_WIN_NAR[15:0]);
+        force_line = pcnt >= free_period;
+        // Both halves unsigned.  The positive one used to compare against
+        // the integer P_BAND * 256, which is signed, so the comparison
+        // was still a signed one and still exposed to apicula#541.
+        period_plausible = period_error[24]
+                         ? (period_error >= PE_NEG_LIMIT)
+                         : (period_error[23:0] <= PE_POS_LIMIT);
     end
     reg        locked_st;
     reg        vertical_reacquire;
@@ -476,7 +381,7 @@ module ntsc_capture #(
     reg  [11:0] fp_sum;
     reg  [7:0]  fp_cand;
     integer     fj;
-    always @(posedge clk_cap or negedge rst_n) begin
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             fp_sum <= 12'd0; fp_cand <= 8'd134;
             for (fj = 0; fj < FP_LAG+FP_N; fj = fj + 1) fp_dl[fj] <= 8'd0;
@@ -497,9 +402,6 @@ module ntsc_capture #(
 
     reg [19:0] hist [0:15];
     reg [19:0] hist_rep [0:15];
-    reg [3:0]  hb_idx;
-    reg [19:0] hb_val;
-    reg        hb_pend;
     integer    hi;
 
     genvar gi;
@@ -516,7 +418,15 @@ module ntsc_capture #(
     wire        in_bp     = (cpos >= BP_START) && (cpos < BP_END);
     wire        in_active = (cpos >= ACTIVE_START) &&
                             (cpos <  ACTIVE_START + 2 * ACTIVE_PIXELS);
-    wire [11:0] a_idx     = cpos - ACTIVE_START[11:0];
+    // The colour pipeline -- mixer, moving sum, gain and matrix -- delivers
+    // rgb four samples later than it did with five clocks per sample, and
+    // y_delay is two longer to keep luma with it.  Writing four samples later
+    // puts every pixel back where it was.
+    localparam integer PIPE = 4;
+    wire [11:0] wpos      = cpos - PIPE[11:0];
+    wire        in_write  = (wpos >= ACTIVE_START) &&
+                            (wpos <  ACTIVE_START + 2 * ACTIVE_PIXELS);
+    wire [11:0] a_idx     = wpos - ACTIVE_START[11:0];
 
     wire [31:0] nco_ref;
     reg  [7:0] dl [0:6];
@@ -529,7 +439,7 @@ module ntsc_capture #(
                         {6'd0, sum7} + 17'd256;
     wire [7:0] luma_lp = s7x73[16:9];
     reg [31:0] ref_delay [0:3];
-    reg [7:0] y_delay [0:3];
+    reg [7:0] y_delay [0:5];
     reg signed [20:0] u_delay [0:6], v_delay [0:6];
 
     wire signed [9:0] chroma = {2'b00, dl[3]} - {2'b00, luma_lp};
@@ -558,9 +468,9 @@ module ntsc_capture #(
     reg signed [20:0] u_mix, v_mix;
     chroma_sincos mixer_ref (.phase(ref_delay[3][31:26]),
                             .cosine(ref_cosine), .sine(ref_sine));
-    // There are five capture clocks per sample. Two intermediate registers
-    // settle the LUT and products before the next sample strobe.
-    always @(posedge clk_cap or negedge rst_n) begin
+    // Two registers: the LUT and operands, then the products.  u_mix is two
+    // samples behind chroma; see PIPE.
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             cos_weight <= 0; sin_weight <= 0; chroma_r <= 0;
             u_mix <= 0; v_mix <= 0;
@@ -576,7 +486,7 @@ module ntsc_capture #(
 
     wire [8:0]  pair_sum  = {1'b0, s_even} + {1'b0, adc_r};
     wire [7:0]  pair_avg  = pair_sum[8:1];
-    wire [7:0] diff = (y_delay[3] > black) ? (y_delay[3] - black) : 8'd0;
+    wire [7:0] diff = (y_delay[5] > black) ? (y_delay[5] - black) : 8'd0;
     wire [15:0] d16  = {8'd0, diff};
     wire [15:0] m45  = (d16 << 5) + (d16 << 3) + (d16 << 2) + d16;  // x2.8125
     wire [15:0] m64  =  d16 << 6;                                    // x4
@@ -610,9 +520,8 @@ module ntsc_capture #(
     wire signed [23:0] u130 = (u_s <<< 7) + (u_s <<< 1);
 
     reg signed [23:0] v73_r, u101_r, v149_r, u130_r;
-    // Use the four idle clocks between samples to pipeline gain and matrix
-    // products. Otherwise the full gain/matrix/clip chain misses 126 MHz.
-    always @(posedge clk_cap or negedge rst_n) begin
+    // Gain, then matrix products, each registered: two more samples of PIPE.
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             u_s <= 0; v_s <= 0; luma_r <= 0; luma_matrix <= 0;
             v73_r <= 0; u101_r <= 0; v149_r <= 0; u130_r <= 0;
@@ -639,7 +548,7 @@ module ntsc_capture #(
     wire [23:0] rgb = (COLOUR && burst_locked) ? {r_clip, g_clip, b_clip}
                                               : {luma_matrix, luma_matrix, luma_matrix};
 
-    always @(posedge clk_cap or negedge rst_n) begin
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             thr <= 8'd64; fast_cnt <= 11'd0; f_min <= 8'hFF; f_max <= 8'h00;
             drop_track <= 8'd0; drop_ref <= 8'd0; slope_armed <= 1'b1;
@@ -651,9 +560,8 @@ module ntsc_capture #(
             for (di = 0; di < 7; di = di + 1) begin
                 u_delay[di] <= 16'sd0; v_delay[di] <= 16'sd0;
             end
-            for (di = 0; di < 4; di = di + 1) begin
-                ref_delay[di] <= 32'd0; y_delay[di] <= 8'd0;
-            end
+            for (di = 0; di < 4; di = di + 1) ref_delay[di] <= 32'd0;
+            for (di = 0; di < 6; di = di + 1) y_delay[di] <= 8'd0;
             thr_lo <= 8'd60; below_lo_d <= 1'b0;
             lo_fall_pcnt <= 16'd0; lo_fall_seen <= 1'b0;
             hi_run <= 5'd0;
@@ -661,7 +569,7 @@ module ntsc_capture #(
             ccnt_real <= 12'd124;
             real_count <= 16'd0; force_count <= 16'd0; qual_count <= 16'd0;
             dmp_we <= 1'b0; dmp_addr <= {DUMP_AW{1'b0}}; dmp_data <= 8'd0;
-            dmp_rdy <= 1'b0; dmp_cap <= 1'b0; dmp_arm <= 23'd0;
+            dmp_rdy <= 1'b0; dmp_cap <= 1'b0; dmp_arm <= 21'd0;
             period_avg <= P_NOM[15:0]; rcnt <= 16'd0; force_run <= 8'd0;
             line_in_field <= 9'd0; be_armed <= 1'b0;
             blank_end <= 12'd0; clip_count <= 16'd0;
@@ -675,7 +583,6 @@ module ntsc_capture #(
             run_peak <= 16'd0; run_lines <= 8'd0; peak_pend <= 1'b0;
             bp_acc <= 13'd0; black <= 8'd134; s_even <= 8'd0; clamp_win <= 1'b0;
             fp_line <= 8'd134; black_q <= 10'd536;
-            hb_idx <= 4'd0; hb_val <= 20'd0; hb_pend <= 1'b0;
             for (hi = 0; hi < 16; hi = hi + 1) begin
                 hist[hi]     <= 20'd0;
                 hist_rep[hi] <= 20'd0;
@@ -688,7 +595,7 @@ module ntsc_capture #(
             vsync_pulse <= 1'b0;
 
             dmp_we <= 1'b0;
-            if (dmp_arm != 23'h7FFFFF) dmp_arm <= dmp_arm + 23'd1;
+            if (dmp_arm != 21'h1FFFFF) dmp_arm <= dmp_arm + 21'd1;
             if (dmp_ack) dmp_rdy <= 1'b0;
             if (sample_stb) begin
                 if (dmp_cap) begin
@@ -712,25 +619,19 @@ module ntsc_capture #(
                 // zeros -- which reads as "every ADC pin is low" and is not a
                 // measurement of the pins at all.  That wasted a test.
                 end else if ((SCOPE_LIVE || !dmp_rdy) &&
-                             dmp_arm == 23'h7FFFFF &&
+                             dmp_arm == 21'h1FFFFF &&
                              (SCOPE_FREERUN != 0 ||
                               (line_edge &&
                                line_in_field > ((SCOPE_TEST_RAMP == 6) ? 9'd200 : 9'd40) &&
                                line_in_field < 9'd230))) begin
                     dmp_cap  <= 1'b1;
                     dmp_addr <= {DUMP_AW{1'b0}};
-                    dmp_arm  <= 23'd0;
+                    dmp_arm  <= 21'd0;
                 end
             end
 
-            hb_pend <= 1'b0;
-            if (sample_stb && in_active) begin
-                hb_idx  <= adc_r[7:4];
-                hb_val  <= hist[adc_r[7:4]];
-                hb_pend <= 1'b1;
-            end else if (hb_pend) begin
-                hist[hb_idx] <= hb_val + 20'd1;
-            end
+            // One clock for the read-modify-write; at 126 MHz it took two.
+            if (in_active) hist[adc_r[7:4]] <= hist[adc_r[7:4]] + 20'd1;
 
             if (sample_stb) begin
                 below_d <= below;
@@ -743,10 +644,8 @@ module ntsc_capture #(
 
                 ref_delay[0] <= nco_ref;
                 y_delay[0] <= luma_lp;
-                for (di = 1; di < 4; di = di + 1) begin
-                    ref_delay[di] <= ref_delay[di-1];
-                    y_delay[di] <= y_delay[di-1];
-                end
+                for (di = 1; di < 4; di = di + 1) ref_delay[di] <= ref_delay[di-1];
+                for (di = 1; di < 6; di = di + 1) y_delay[di] <= y_delay[di-1];
                 u_delay[0] <= u_mix; v_delay[0] <= v_mix;
                 for (di = 1; di < 7; di = di + 1) begin
                     u_delay[di] <= u_delay[di-1];
@@ -880,7 +779,6 @@ module ntsc_capture #(
                         hist_rep[hi] <= hist[hi];
                         hist[hi]     <= 20'd0;
                     end
-                    hb_pend <= 1'b0;
                 end
 
                 sl_d[0] <= adc_lp;
@@ -939,7 +837,7 @@ module ntsc_capture #(
                 end
                 if (line_real) fp_line <= fp_cand;   // this line's front porch
 
-                if (in_active) begin
+                if (in_write) begin
                     if (!a_idx[0]) begin
                         s_even <= adc_r;
                     end else begin
@@ -958,17 +856,37 @@ module ntsc_capture #(
             end
         end
     end
+    wire [31:0] nco_angle, nco_off;
+    wire        nco_angle_new;
     burst_nco #(.TRACK_GAP_SAMPLES(BURST_GAP_SAMPLES)) u_nco (
-        .clk(clk_cap), .rst_n(rst_n), .sample_en(sample_stb),
+        .clk(clk), .rst_n(rst_n), .sample_en(sample_stb),
         .sample(adc_r), .blank_ref(black), .burst_gate(in_burst),
         // A line start inside the gate -- a real edge arriving just after a
         // forced one -- restarts the integration, so samples taken on the
         // forced timing (sync tip, on a late line) never reach the angle.
-        .gate_restart(sample_stb && line_edge),
+        .gate_restart(line_edge),
         .phase(nco_phase), .inc(),
         .burst_i(burst_corr_i), .burst_q(burst_corr_q),
-        .locked(burst_locked), .good_lines(), .phase_ref(nco_ref)
+        .locked(burst_locked), .good_lines(), .phase_ref(nco_ref),
+        .dbg_angle(nco_angle), .dbg_off(nco_off), .dbg_angle_new(nco_angle_new)
     );
+    reg         angle_seen;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            angle_seen <= 1'b0; dbg_line_i <= 16'd0; dbg_line_q <= 16'd0;
+            dbg_line_angle <= 32'd0; dbg_line_off <= 32'd0; dbg_line_fresh <= 1'b0;
+        end else begin
+            if (line_edge)          angle_seen <= 1'b0;
+            else if (nco_angle_new) angle_seen <= 1'b1;
+            if (line_in_field == 9'd100 && cpos == 12'd400) begin
+                dbg_line_i     <= burst_corr_i;
+                dbg_line_q     <= burst_corr_q;
+                dbg_line_angle <= nco_angle;
+                dbg_line_off   <= nco_off;
+                dbg_line_fresh <= angle_seen;
+            end
+        end
+    end
 
 endmodule
 
