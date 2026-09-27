@@ -25,9 +25,10 @@ module hdmi_out #(
     input  wire [7:0] red,
     input  wire [7:0] green,
     input  wire [7:0] blue,
-    // Glitch: pixels corrupted as a TMDS bit error would decode them, with this
-    // density, 0 = off; see tmds_sparkle.  Every symbol sent stays valid.
-    input  wire [7:0] sparkle,
+    // Glitch: the link failing -- lanes skewed, then lost or misread in
+    // blocks -- as the sink would show it; 0 = off.  See tmds_link_fx.  Every
+    // symbol sent stays valid.
+    input  wire [7:0] link_fx,
     output wire       tmds_clk_p,
     output wire       tmds_clk_n,
     output wire [2:0] tmds_d_p,
@@ -35,8 +36,8 @@ module hdmi_out #(
 );
     wire [9:0] tmds_blue, tmds_green, tmds_red;
     wire [7:0] sp_red, sp_green, sp_blue;
-    tmds_sparkle glitch (
-        .clk(pixel_clk), .rst_n(reset_n), .density(sparkle), .data(active),
+    tmds_link_fx glitch (
+        .clk(pixel_clk), .rst_n(reset_n), .amount(link_fx), .data(active),
         .pix_in({red, green, blue}), .pix_out({sp_red, sp_green, sp_blue})
     );
 

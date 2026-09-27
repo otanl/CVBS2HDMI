@@ -181,7 +181,8 @@ module top_ntsc_hdmi #(
 
     // ---- the Unit 8Angle: glitch controls ------------------------------------
     // Eight knobs, each breaking one stage of the decoder (ntsc_capture's
-    // fx_*) or, knob 5, of the HDMI encoder.  A knob turned fully left is off: a dead
+    // fx_*) or, knob 8, the HDMI link.  Knobs 1..4 move lines about, 5..8
+    // break colour, each four in the order the signal meets them.  A knob turned fully left is off: a dead
     // band of KNOB_DEAD counts keeps the picture exactly clean there whatever
     // the converter's noise.  The switch in the green position (as the
     // diagnostic view shows it) enables them, and nothing acts while the unit
@@ -704,9 +705,9 @@ module top_ntsc_hdmi #(
         .pixel_clk(pixel_clk), .serial_clk(serial_clk), .reset_n(vid_rst_n),
         .active(active_d), .hsync(hsync_d), .vsync(vsync_d),
         .red(out_r), .green(out_g), .blue(out_b),
-        // Knob 5: the TMDS symbols themselves corrupted, a layer below the
-        // picture (tmds_sparkle).
-        .sparkle(fx[39:32]),
+        // Knob 8: the HDMI link failing, a layer below the picture
+        // (tmds_link_fx).
+        .link_fx(fx[63:56]),
         .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n),
         .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n)
     );

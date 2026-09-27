@@ -131,7 +131,7 @@ module top_hdmi_test #(
     hdmi_out #(.CLK_LANE_OSER(CLK_LANE_OSER)) out (
         .pixel_clk(pixel_clk), .serial_clk(serial_clk), .reset_n(video_reset_n),
         .active(active), .hsync(hsync), .vsync(vsync),
-        .red(red), .green(green), .blue(blue), .sparkle(8'd0),
+        .red(red), .green(green), .blue(blue), .link_fx(8'd0),
         .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n),
         .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n)
     );

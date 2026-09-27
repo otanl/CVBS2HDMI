@@ -178,15 +178,17 @@ module ntsc_capture #(
     assign adc_dbg_cx = adc_dbg_cx_w;
     assign adc_dbg_cy = adc_dbg_cy_w;
     // ---- glitch effects -----------------------------------------------------
-    // All zero is the decoder exactly as it is without them.
+    // All zero is the decoder exactly as it is without them.  Byte n is knob
+    // n + 1: the first four move lines, the last four break colour, each four
+    // in the order the signal meets them.
     wire [7:0] fx_slice = fx[7:0];     // sync slicer set higher: picture reads as sync
     wire [7:0] fx_hhold = fx[15:8];    // real syncs ignored, flywheel detuned
     wire [7:0] fx_stretch = fx[23:16]; // lines resampled at random rates
-    wire [7:0] fx_col   = fx[31:24];   // colour reference collapsing: burst and oscillator
-    //         fx[39:32] corrupts the TMDS symbols (top_ntsc_hdmi, tmds_sparkle)
-    wire [7:0] fx_adc   = fx[47:40];   // the converter's bus failing, as it did here
+    wire [7:0] fx_hold  = fx[31:24];   // lines left unpublished: the store repeats
+    wire [7:0] fx_adc   = fx[39:32];   // the converter's bus failing, as it did here
+    wire [7:0] fx_col   = fx[47:40];   // colour reference collapsing: burst and oscillator
     wire [7:0] fx_wrap  = fx[55:48];   // colour matrix overdriven, and wrapping
-    wire [7:0] fx_hold  = fx[63:56];   // lines left unpublished: the store repeats
+    //         fx[63:56] fails the HDMI link (top_ntsc_hdmi, tmds_link_fx)
     reg  [31:0] fx_rng = 32'h1D87_2A93;
     always @(posedge clk) fx_rng <= {fx_rng[30:0], fx_rng[31] ^ fx_rng[21] ^ fx_rng[1] ^ fx_rng[0]};
     // fx_col, the colour reference collapsing, two ways at once.  A phase ramp

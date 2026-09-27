@@ -2526,18 +2526,21 @@ knobs moving with the bench's turns.
 The bench asked for glitch / datamosh control from the 8Angle, with one rule:
 not image processing on the output, but things only this decoder can do --
 each knob breaks one of its own stages.  Fully left is off, and must be the
-clean picture exactly.  ntsc_capture takes them as `fx`, a byte each:
+clean picture exactly.  ntsc_capture takes them as `fx`, a byte each, byte
+n for knob n + 1.  Knobs 1..4 move lines about and 5..8 break colour, each
+four in the order the signal meets them (reordered 2026-09-27; the history
+below uses the old numbers):
 
 | knob | fx | what breaks |
 |---|---|---|
 | 1 | `fx_slice` | sync slicer raised from just above black to just under white, and long runs accepted: dark picture reads as sync, so the picture decides where lines start |
 | 2 | `fx_hhold` | real syncs thrown away (probability fx/256), flywheel and free-running starts up to 59 samples long: horizontal hold lost |
 | 3 | `fx_stretch` | a line, with probability fx/256, resampled at a random rate -- one pixel per 4 samples (squeezed into the left half) up to one per sample (its left half stretched across); the rest of the bank still holds an older line |
-| 4 | `fx_col` | the colour reference collapsing: a phase ramp on the burst-locked reference, up to 23 kHz, which the per-line correction cannot see, and the burst gate slid up to 478 samples into the picture, where the CORDIC takes a bar's chroma for the burst |
-| 5 | HDMI: `tmds_sparkle` | a TMDS bit error, worked out in the FPGA: a hit pixel (probability (fx/256)^2 per channel) is encoded as its data word, bits flipped, and decoded as the sink would; the real encoder then sends that byte, so every symbol on the wire is valid -- bad-cable sparkle, snow at full |
-| 6 | `fx_adc` | the bus faults this board really had, worsening in order: the LVDS pair misread of bits 0/1 and 4/5, bits 6, 3, 2 stuck low, pairs transposed, the bus reversed |
+| 4 | `fx_hold` | lines left unpublished (probability fx/256): the line store repeats the last one |
+| 5 | `fx_adc` | the bus faults this board really had, worsening in order: the LVDS pair misread of bits 0/1 and 4/5, bits 6, 3, 2 stuck low, pairs transposed, the bus reversed |
+| 6 | `fx_col` | the colour reference collapsing: a phase ramp on the burst-locked reference, up to 23 kHz, which the per-line correction cannot see, and the burst gate slid up to 478 samples into the picture, where the CORDIC takes a bar's chroma for the burst |
 | 7 | `fx_wrap` | the colour matrix overdriven (chroma up to 4.7 times, luma 2.9) and its clip removed: past 255 a value keeps its low eight bits, so saturated and bright parts fold into their complements |
-| 8 | `fx_hold` | lines left unpublished (probability fx/256): the line store repeats the last one |
+| 8 | HDMI: `tmds_link_fx` | the link failing, as the sink would show it: first lane skew -- green fx/8 pixels late, blue twice that, drawn afresh each line with a shiver growing with the knob -- then past half way blocks of 1..16 lines where one lane is lost, or its control bits misread (bit 8: v ^ 0xFE; bits 8 and 9: inverted).  Worked out in the pixel domain and encoded properly, so every symbol on the wire is valid |
 | switch | | green in the diagnostic view enables them all |
 
 **Which end is left was measured, not assumed**: all eight fully left read
@@ -2573,10 +2576,19 @@ First board trial, and what it changed:
 the colour-bar stimulus: it must visibly break the picture -- over 1000 wrong
 colour channels, or for the hold, lines unpublished -- and 200 lines after it
 is removed the bars must decode to the published values again, `max_error`
-17 as in sim-video.  The sparkle is below the capture and has its own bench,
-`make sim-sparkle`: the rate following (fx/256)^2 (0.607 against 0.609 at 200,
-0.063 at 64), blanking untouched, nothing at 0, and an empty error on every
-pixel round-tripping exactly -- the modelled encoder and decoder are inverses.
+17 as in sim-video.  The HDMI link is below the capture and has its own
+bench, `make sim-link`: per line it finds the skew that explains green and
+requires red untouched, blue at twice the skew, the skew within fx/8 plus
+its shiver, and anything else one span of one lane with one lane error;
+lane errors never at or below half way (13% of lines at 150, 65% at 200, 84%
+at full), blanking untouched, nothing at all at 0.
+
+**The TMDS sparkle was replaced (2026-09-27)**: random pixels hit by bit
+errors are only ever noise, and the bench found no use for it.  A failing
+link has structure -- skewed lanes, a lane lost or misread for a stretch --
+and keeps the picture's edges, so it can be played.  Lane errors start with
+probability p (p / 2) a line, p = (fx - 128) / 128, from two random draws:
+one draw rose too steeply (94% of lines at 200).
 
 The first slice mapping added a fixed 0..119 codes to the normal threshold:
 nothing below about a quarter turn, where the slice was still under blanking,
