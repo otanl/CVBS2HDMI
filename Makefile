@@ -303,7 +303,7 @@ hdmi640-program: $(HDMI640_BITSTREAM)
 # --- NTSC-J in, colour 640x480p HDMI out ---------------------------------
 NTSC_TOP       := top_ntsc_hdmi
 NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/adc_front.v src/line_buffer.v \
-                  src/video_line_store.v src/chroma_sincos.v \
+                  src/video_line_store.v src/video_zoom_store.v src/chroma_sincos.v \
                   src/sync_lpf.v src/burst_nco.v src/cordic_atan.v \
                   src/video_timing.v src/hdmi_out.v src/tmds_encoder.v src/tmds_sparkle.v \
                   src/ntsc_status.v src/uart_tx.v src/rpll_126.v src/angle8.v
@@ -494,7 +494,7 @@ check-tools:
 	@echo "All required tools are available."
 
 .PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-sparkle sim-freerun sim-angle8 sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-sparkle sim-freerun sim-angle8 sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-sparkle sim-freerun sim-angle8 sim-zoom sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -503,6 +503,21 @@ sim-burst-products: | $(BUILD_STAMP)
 			-o $(BUILD_DIR)/burst_products_tb src/burst_nco.v src/cordic_atan.v \
 			src/chroma_sincos.v sim/burst_products_tb.v && \
 		$(TOOL) vvp $(BUILD_DIR)/burst_products_tb || exit $$?; \
+	done
+
+.PHONY: sim-zoom
+# The zoomed view against a model, with the output frame servoed onto the
+# fields: 240p into a 524-line frame, interlaced into 525, and the negative
+# control -- a ring too short for the lag -- which must be seen to fail.
+# Fields: V_TOT INTERLACED NS EXPECT_FAIL
+sim-zoom: | $(BUILD_STAMP)
+	@for cfg in "524 0 88 0" "525 1 88 0" "524 0 60 1"; do \
+		set -- $$cfg; \
+		$(TOOL) iverilog -g2012 -s video_zoom_store_tb -Pvideo_zoom_store_tb.V_TOT=$$1 \
+			-Pvideo_zoom_store_tb.INTERLACED=$$2 -Pvideo_zoom_store_tb.NS=$$3 \
+			-Pvideo_zoom_store_tb.EXPECT_FAIL=$$4 -o $(BUILD_DIR)/video_zoom_store_tb_$$1_$$3 \
+			src/video_zoom_store.v src/video_timing.v sim/video_zoom_store_tb.v && \
+		$(TOOL) vvp $(BUILD_DIR)/video_zoom_store_tb_$$1_$$3 || exit $$?; \
 	done
 
 .PHONY: check-signed

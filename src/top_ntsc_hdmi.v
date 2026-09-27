@@ -5,8 +5,8 @@
 // 25.2 MHz pixel clock, on which the whole decoder runs at one sample per
 // clock; 126 MHz otherwise reaches only the converter's clock.  Completed
 // input lines are bob displayed through an ownership-protected four-bank line
-// store. S1 toggles diagnostics; S2 steps the converter clock's rotation (used
-// only with the calibration off). Default output is the decoded image.
+// store. S1 toggles diagnostics; S2 toggles the zoomed view (video_zoom_store).
+// Default output is the decoded image.
 
 module top_ntsc_hdmi #(
     parameter [3:0] DEFAULT_PHASE = 4'd0,   // rotation, with calibration off
@@ -118,7 +118,8 @@ module top_ntsc_hdmi #(
     reg [1:0]  btn_meta, btn_sync, btn_stable;
     reg [19:0] btn_timer;
     reg [21:0] btn_inhibit;
-    reg [3:0]  phase_sel;    // converter clock rotation, 0..9
+    reg [3:0]  phase_sel;    // converter clock rotation, 0..9, calibration off
+    reg        zoom;         // S2: the middle of the picture, 1.5 times
     wire [3:0] phase_used;   // the rotation in use
     wire       adc_cal_done;
     wire [5:0] adc_sweeps;
@@ -142,6 +143,7 @@ module top_ntsc_hdmi #(
         if (!vid_rst_n) begin
             btn_meta <= 2'b11; btn_sync <= 2'b11; btn_stable <= 2'b11;
             btn_timer <= 20'd0; phase_sel <= DEFAULT_PHASE; gain_sel <= 2'd0;
+            zoom <= 1'b0;
             scope_only <= SCOPE_ONLY;
             btn_inhibit <= 22'd0; hunt_cnt <= 27'd0;
         end else begin
@@ -163,7 +165,7 @@ module top_ntsc_hdmi #(
                     btn_timer <= 20'd0;
                     if (btn_inhibit == 22'h3FFFFF) begin
                         if (btn_stable[1] && !btn_sync[1])
-                            phase_sel <= (phase_sel == 4'd9) ? 4'd0 : phase_sel + 4'd1;
+                            zoom <= ~zoom;
                         if (btn_stable[0] && !btn_sync[0])
                             scope_only <= ~scope_only;
                     end
@@ -278,6 +280,13 @@ module top_ntsc_hdmi #(
     reg        v_longer, v_shorter;
 
     localparam [10:0] V_TARGET = 11'd488;
+    // Zoomed, the frame runs 88 rows later against the input, so that row 0's
+    // time (video_zoom_store's OFF, 121 rows after the field event) has come
+    // when the row starts: the servo rests the event anywhere on rows 399..401,
+    // which with a 524-line frame leaves 122..125 rows to row 0.
+    localparam [10:0] V_TARGET_ZOOM = 11'd400;
+    reg         zoom_now;             // the view on show, changed between frames
+    wire [10:0] v_target = zoom_now ? V_TARGET_ZOOM : V_TARGET;
     // The frame's base length follows the input.  Interlaced NTSC is 262.5
     // lines a field, 525 output lines a frame; the 240p most game consoles
     // send is 262 every field, 60.05 Hz, which needs 523.9 -- 1.13 lines a
@@ -307,8 +316,8 @@ module top_ntsc_hdmi #(
                 v_total <= (fc_now == 2'd1) ? 11'd524 : 11'd525;
         end
     end
-    wire [10:0] y_rel = (y >= V_TARGET) ? (y - V_TARGET)
-                                        : (y + v_total - V_TARGET);
+    wire [10:0] y_rel = (y >= v_target) ? (y - v_target)
+                                        : (y + v_total - v_target);
     always @(posedge pixel_clk or negedge vid_rst_n) begin
         if (!vid_rst_n) begin
             y_at_field <= 11'd0; v_longer <= 1'b0; v_shorter <= 1'b0;
@@ -340,12 +349,28 @@ module top_ntsc_hdmi #(
     wire [23:0] pixel_rgb;
     wire pixel_valid;
 
+    wire [23:0] plain_rgb, zoom_rgb;
+    wire        plain_valid, zoom_valid;
     video_line_store linebuf (
         .wr_clk(pixel_clk), .wr_reset_n(vid_rst_n), .wr_en(wr_en),
         .wr_x(wr_addr[9:0]), .wr_data(wr_data), .wr_done(line_done),
         .rd_clk(pixel_clk), .rd_reset_n(vid_rst_n), .rd_line_end(line_end),
-        .rd_x(x[9:0]), .rd_data(pixel_rgb), .rd_valid(pixel_valid)
+        .rd_x(x[9:0]), .rd_data(plain_rgb), .rd_valid(plain_valid)
     );
+    // Both views are kept up to date all the time; S2 only picks one, at a
+    // frame boundary, and the servo then slides the frame to the new target
+    // at a row a frame.
+    video_zoom_store zoombuf (
+        .clk(pixel_clk), .rst_n(vid_rst_n),
+        .wr_en(wr_en), .wr_x(wr_addr[9:0]), .wr_data(wr_data), .wr_done(line_done),
+        .field(vs_event && lock_sync[2]),
+        .x(x), .y(y), .rd_data(zoom_rgb), .rd_valid(zoom_valid)
+    );
+    always @(posedge pixel_clk or negedge vid_rst_n)
+        if (!vid_rst_n)                 zoom_now <= 1'b0;
+        else if (x == 11'd0 && y == 11'd0) zoom_now <= zoom;
+    assign pixel_rgb   = zoom_now ? zoom_rgb : plain_rgb;
+    assign pixel_valid = zoom_now ? zoom_valid : plain_valid;
 
     reg active_d, hsync_d, vsync_d;
     always @(posedge pixel_clk or negedge vid_rst_n) begin

@@ -1101,6 +1101,45 @@ exposed two more things:
   `sample-clock` branch has no ALU cells and was measured not to depend on it;
   it is merged now (*The decoder on the pixel clock*).
 
+### S2 zooms: 1.5 times, from a ring of lines, timed from the field (2026-09-27)
+
+A game console's picture sat at 425 x 320 inside the 640 x 480 screen, a
+wide border all round, so 1.5 times fills the screen exactly.  Stretching
+only horizontally was rejected at the bench ("太るのは良くないな"); the zoom
+is proportional and crops.  `src/video_zoom_store.v`; S2 toggles it (S2 used
+to step the converter clock's rotation, which no build has used since the
+calibration went in).
+
+There is no frame buffer.  A zoomed frame walks through the field at two
+thirds of the line rate, so the bottom row shows a line about 80 lines old,
+82.4 at worst; the ring keeps 88 lines of the middle 427 pixels as RGB666.
+Row r shows the line that was the latest at `t_field + OFF + 534 r` -- timed
+from the field event, not from the output frame, so the servo's one-row trims
+never reach the picture -- and `V_TARGET` moves from 488 to 400 so the frame
+runs late enough for row 0's time to have come.  When that time does not fall
+in the eight rows before row 0 (no sync, a missed field event, the servo
+still sliding after a switch), row 0's own start is used instead, so a
+signal with no sync is shown zoomed too.  Horizontally each output pixel is
+2x/3 of the kept ones, weighted a quarter and three quarters.  The plain view
+still comes from `video_line_store`, unchanged, at eight bits.
+
+Measured on the board with the console: content spans x 4..638 and y 1..479,
+and a feature's top edge sat on the same row in all 30 frames sampled.
+`make sim-zoom` checks every pixel against a model for 240p and interlaced
+input, stillness across servo trims, and the no-sync fallback; a 60-line ring
+is the negative control.
+
+Two things that cost a build each:
+
+- **Left to itself, Yosys maps the 37576 x 18 ring as pairs of 2K x 9 and
+  rounds up to a whole pair** -- 38 blocks, and with the timestamps in one
+  more that was all 46 and placement failed.  Written as explicit 1K banks it
+  is 37, and the timestamps go to LUT RAM (`ram_style = "distributed"`, 30
+  RAM16SDP4, which Apicula packs): 44 of 46 in all, LUT4 76%, pixel clock
+  45 MHz.
+- **`dist` is a SystemVerilog keyword**, like `expect`; Icarus in -g2012
+  mode reports a bare syntax error.
+
 ### A broken input is shown, not blacked out (2026-09-26)
 
 Wanted behaviour, from the bench: a damaged or missing signal should come out
