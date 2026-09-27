@@ -33,6 +33,10 @@ module video_timing #(
     // source, which a one-shot alignment cannot do at all.
     input  wire        v_longer,
     input  wire        v_shorter,
+    // The frame's base length, taken once per frame; V_TOTAL is used until
+    // the first.  top_ntsc_hdmi sets it from the input's fields: 525 for
+    // interlaced NTSC, 524 for the 240p most game consoles send.
+    input  wire [10:0] v_total,
     output reg  [10:0] x,
     output reg  [10:0] y,
     output wire        active,
@@ -46,7 +50,7 @@ module video_timing #(
         if (!reset_n)
             v_end <= V_TOTAL - 11'd1;
         else if ((x == H_TOTAL - 11'd1) && (y == 11'd0))
-            v_end <= V_TOTAL - 11'd1 + {10'd0, v_longer} - {10'd0, v_shorter};
+            v_end <= v_total - 11'd1 + {10'd0, v_longer} - {10'd0, v_shorter};
     end
 
     always @(posedge pixel_clk or negedge reset_n) begin

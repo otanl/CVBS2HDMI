@@ -160,6 +160,10 @@ module ntsc_capture #(
     output wire [7:0]  slice_max,
     output wire [7:0]  slice_thr,
     output wire [7:0]  black_out,
+    // Clocks (= samples) between the last two field events: 419619 or 421221
+    // alternately for interlaced NTSC, 419619 every field for 240p.  Time, not
+    // lines: the vertical interval's lines carry no line start to count.
+    output reg  [19:0] field_clks,
     output wire [255:0] hist_flat
 );
     // The converter's interface and its read timing: see adc_front.
@@ -306,6 +310,7 @@ module ntsc_capture #(
     reg [15:0] rcnt;
     reg [7:0]  force_run;
     reg [8:0]  line_in_field;
+    reg [19:0] field_cnt;            // clocks since the last field event
     reg        be_armed;
     reg [7:0]  bmin_acc, bmax_acc;
     reg        vs_seen;
@@ -677,7 +682,7 @@ module ntsc_capture #(
             dmp_we <= 1'b0; dmp_addr <= {DUMP_AW{1'b0}}; dmp_data <= 8'd0;
             dmp_rdy <= 1'b0; dmp_cap <= 1'b0; dmp_arm <= 21'd0;
             period_avg <= P_NOM[15:0]; rcnt <= 16'd0; force_run <= 8'd0;
-            line_in_field <= 9'd0; be_armed <= 1'b0;
+            line_in_field <= 9'd0; be_armed <= 1'b0; field_clks <= 20'd0; field_cnt <= 20'd0;
             blank_end <= 12'd0; clip_count <= 16'd0;
             burst_min <= 8'hFF; burst_max <= 8'd0; vs_seen <= 1'b0;
             bmin_acc <= 8'hFF; bmax_acc <= 8'd0;
@@ -873,6 +878,7 @@ module ntsc_capture #(
                 end else begin
                     hi_run <= hi_run + 5'd1;
                 end
+                if (field_cnt != 20'hFFFFF) field_cnt <= field_cnt + 20'd1;
                 if (vs_hold != 16'd0) begin
                     vs_hold <= vs_hold - 16'd1;
                 end else if (below && (lowrun == VS_MIN)) begin
@@ -880,6 +886,8 @@ module ntsc_capture #(
                     vsync_pulse <= 1'b1;
                     vertical_reacquire <= 1'b1;
                     vs_seen     <= 1'b1;
+                    field_clks  <= field_cnt;
+                    field_cnt   <= 20'd0;
                     line_in_field <= 9'd0;
                     for (hi = 0; hi < 16; hi = hi + 1) begin
                         hist_rep[hi] <= hist[hi];

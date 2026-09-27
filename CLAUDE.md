@@ -210,6 +210,18 @@ line a couple of times a second. **`H_TOTAL` is therefore 801, not 800**:
 (780x539 would be exact, but it moves the totals far enough that a picky capture
 card may stop recognising the mode.)
 
+**A 240p source needs a 524-line frame** (2026-09-27).  Most game consoles send
+262 lines every field, not 262.5 -- 60.05 Hz, which wants 523.9 output lines,
+1.13 a frame short of 525 and more than the servo's one line can give back.  A
+console's picture therefore crept up the screen, measured at 0.15 rows a frame.
+`ntsc_capture` now reports `field_clks`, the clocks between field events
+(419619 every field for 240p; 419619/421221 alternately interlaced), and
+`top_ntsc_hdmi` sets the frame's base length from the sum of the last two: 524
+under 840039, else 525, only for a plausible pair and only once two pairs agree.
+On the board the console's picture then held within 0..2 rows over 240 frames.
+Count clocks, not lines: a line count read 258 and 259, because the vertical
+interval's lines carry no line start.
+
 ### Replay a real capture in simulation — `make sim-capture`
 
 `sim/ntsc_capture_tb.v` feeds recorded ADC samples into `ntsc_capture` and

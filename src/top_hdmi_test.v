@@ -81,7 +81,7 @@ module top_hdmi_test #(
         .SYNC_POS(SYNC_POS)
     ) timing (
         .pixel_clk(pixel_clk), .reset_n(video_reset_n),
-        .vsync_align(1'b0),
+        .vsync_align(1'b0), .v_total(V_TOT),
         .x(x), .y(y), .active(active), .hsync(hsync), .vsync(vsync)
     );
 

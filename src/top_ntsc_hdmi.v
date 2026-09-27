@@ -205,6 +205,8 @@ module top_ntsc_hdmi #(
         end
     endgenerate
 
+    wire [19:0] field_clks;           // clocks in the last field; see v_total
+
     ntsc_capture #(.LEGACY_TIMING(LEGACY_TIMING),
                    .SCOPE_TEST_RAMP(SCOPE_TEST_RAMP),
                                       .CLAMP_FORCE(CLAMP_FORCE),
@@ -238,7 +240,7 @@ module top_ntsc_hdmi #(
         .burst_corr_i(burst_corr_i), .burst_corr_q(burst_corr_q),
         .dmp_we(dmp_we), .dmp_addr(dmp_addr), .dmp_data(dmp_data),
         .dmp_rdy(dmp_rdy), .dmp_ack(TAPE ? 1'b0 : dmp_ack),
-        .black_out(black_level),
+        .black_out(black_level), .field_clks(field_clks),
         .hist_flat(hist_flat)
     );
 
@@ -276,15 +278,44 @@ module top_ntsc_hdmi #(
     reg        v_longer, v_shorter;
 
     localparam [10:0] V_TARGET = 11'd488;
+    // The frame's base length follows the input.  Interlaced NTSC is 262.5
+    // lines a field, 525 output lines a frame; the 240p most game consoles
+    // send is 262 every field, 60.05 Hz, which needs 523.9 -- 1.13 lines a
+    // frame shorter than 525, more than the servo's one line can give, so
+    // with a fixed 525 such a picture crept up the screen by 0.15 rows a
+    // frame, measured.  The base comes from the last two fields' length in
+    // clocks -- the capture runs on this same clock -- which is 839238 for
+    // 240p and 840840 for interlaced: under the midpoint, 524 lines, else 525.
+    // It only ever takes those two values, only for a plausible pair, and only
+    // once two pairs in a row agree, so a glitch faking field events cannot
+    // swing the frame about.  (Counting lines was tried first and reads 258
+    // and 259: the vertical interval's lines have no line start to count.)
+    localparam [20:0] PAIR_MID = 21'd840039;
+    reg  [19:0] fc_last = 20'd0;
+    reg  [1:0]  fc_vote = 2'd0;          // 1 = short, 2 = long, 0 = neither
+    reg  [10:0] v_total = 11'd525;
+    wire [20:0] fc_pair  = {1'b0, fc_last} + {1'b0, field_clks};
+    wire        fc_plaus = (fc_pair > 21'd830000) && (fc_pair < 21'd850000);
+    wire [1:0]  fc_now   = !fc_plaus ? 2'd0 : (fc_pair < PAIR_MID) ? 2'd1 : 2'd2;
+    always @(posedge pixel_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n) begin
+            fc_last <= 20'd0; fc_vote <= 2'd0; v_total <= 11'd525;
+        end else if (vs_event && lock_sync[2]) begin
+            fc_last <= field_clks;
+            fc_vote <= fc_now;
+            if (fc_now != 2'd0 && fc_now == fc_vote)
+                v_total <= (fc_now == 2'd1) ? 11'd524 : 11'd525;
+        end
+    end
     wire [10:0] y_rel = (y >= V_TARGET) ? (y - V_TARGET)
-                                        : (y + 11'd525 - V_TARGET);
+                                        : (y + v_total - V_TARGET);
     always @(posedge pixel_clk or negedge vid_rst_n) begin
         if (!vid_rst_n) begin
             y_at_field <= 11'd0; v_longer <= 1'b0; v_shorter <= 1'b0;
         end else if (vs_event && lock_sync[2]) begin
             y_at_field <= y_rel;
             v_longer  <= FRAME_ALIGN && (y_rel > 11'd1)   && (y_rel < 11'd263);
-            v_shorter <= FRAME_ALIGN && (y_rel >= 11'd263) && (y_rel < 11'd524);
+            v_shorter <= FRAME_ALIGN && (y_rel >= 11'd263) && (y_rel < v_total - 11'd1);
         end
     end
 
@@ -301,7 +332,7 @@ module top_ntsc_hdmi #(
         .SYNC_POS(1'b0)
     ) timing (
         .pixel_clk(pixel_clk), .reset_n(vid_rst_n),
-        .vsync_align(1'b0),
+        .vsync_align(1'b0), .v_total(v_total),
         .v_longer(v_longer), .v_shorter(v_shorter),
         .x(x), .y(y), .active(active), .hsync(hsync), .vsync(vsync)
     );
