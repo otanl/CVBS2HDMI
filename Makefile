@@ -34,7 +34,7 @@ SIM_SRC := $(PROBE_RTL) sim/gowin_prim_sim.v sim/adc_probe_tb.v
 HDMI_TOP         := top_hdmi_test
 HDMI_RTL         := src/top_hdmi_test.v src/rpll_135.v src/rpll_371.v \
                     src/rpll_126.v \
-                    src/video_timing.v src/hdmi_out.v src/tmds_encoder.v \
+                    src/video_timing.v src/hdmi_out.v src/tmds_encoder.v src/tmds_sparkle.v \
                     src/hdmi_status.v src/uart_tx.v
 HDMI_CONSTRAINTS := constraints/tangnano20k_hdmi.cst
 HDMI_NETLIST     := $(BUILD_DIR)/$(HDMI_TOP).json
@@ -305,7 +305,7 @@ NTSC_TOP       := top_ntsc_hdmi
 NTSC_RTL       := src/top_ntsc_hdmi.v src/ntsc_capture.v src/adc_front.v src/line_buffer.v \
                   src/video_line_store.v src/chroma_sincos.v \
                   src/sync_lpf.v src/burst_nco.v src/cordic_atan.v \
-                  src/video_timing.v src/hdmi_out.v src/tmds_encoder.v \
+                  src/video_timing.v src/hdmi_out.v src/tmds_encoder.v src/tmds_sparkle.v \
                   src/ntsc_status.v src/uart_tx.v src/rpll_126.v src/angle8.v
 # Built by concatenation so the pin numbers keep a single source: the ADC,
 # clock, LED, button and UART pins come from the probe constraints and the
@@ -493,8 +493,8 @@ check-tools:
 	@$(TOOL) openFPGALoader --version >/dev/null
 	@echo "All required tools are available."
 
-.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-freerun sim-angle8 sim-hdmi test-quality
-test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-freerun sim-angle8 sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
+.PHONY: test sim-reference sim-tracking sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-sparkle sim-freerun sim-angle8 sim-hdmi test-quality
+test: sim sim-badphase sim-cordic sim-burst sim-burst-products sim-reference sim-tracking sim-capture sim-capture-weak sim-video sim-video-weak sim-video-mono sim-video-late sim-video-glitch sim-sparkle sim-freerun sim-angle8 sim-hdmi sim-scope-header sim-scope-freerun sim-tape sim-adc-front check-signed test-quality
 
 .PHONY: sim-burst-products
 sim-burst-products: | $(BUILD_STAMP)
@@ -604,16 +604,15 @@ sim-video-late: | $(BUILD_STAMP)
 # The glitch effects (ntsc_capture's fx): each applied for 50 lines of the
 # colour-bar video must visibly break it -- wrong colours, or for the line
 # hold, lines left unpublished -- and once removed the picture must decode to
-# the published bar values again, exactly as sim-video.  The converter-clock
-# skew cannot show against a model with no switching window, so it is checked
-# for recovery only.  The eight runs go in parallel.
+# the published bar values again, exactly as sim-video.  The runs go in
+# parallel.
 GLITCH_RUNS := "all 64'hC8C8C8C8C8C8C8C8 1000 1000000" \
 	"slice 64'h0000000000000050 1000 1000000" \
 	"hhold 64'h000000000000C800 1000 1000000" \
-	"nco 64'h00000000C8000000 1000 1000000" \
-	"yc 64'h000000C800000000 1000 1000000" \
-	"adc 64'h0000C80000000000 0 1000000" \
-	"black 64'h00C8000000000000 1000 1000000" \
+	"stretch 64'h0000000000C80000 1000 1000000" \
+	"colour 64'h00000000C8000000 1000 1000000" \
+	"adc 64'h0000C80000000000 1000 1000000" \
+	"wrap 64'h00C8000000000000 1000 1000000" \
 	"hold 64'hC800000000000000 0 20"
 sim-video-glitch: | $(BUILD_STAMP)
 	@pids=""; for run in $(GLITCH_RUNS); do set -- $$run; \
@@ -625,6 +624,18 @@ sim-video-glitch: | $(BUILD_STAMP)
 		  echo "$$1: `grep -hE 'glitch:|RESULT|FATAL' $(BUILD_DIR)/ntsc_glitch_$$1.log | tr '\n' ' '`"; exit $$s ) & \
 		pids="$$pids $$!"; \
 	done; st=0; for p in $$pids; do wait $$p || st=1; done; exit $$st
+
+# Knob 5, tmds_sparkle: pixels corrupted as a TMDS bit error would decode.
+# The rate must follow the knob and blanking stay untouched; DENSITY 0 is the
+# negative control; an empty error on every pixel must round-trip exactly,
+# which proves the encoder and decoder modelled inside are inverses.
+sim-sparkle: | $(BUILD_STAMP)
+	@for run in "200 0" "64 0" "0 0" "255 1"; do set -- $$run; \
+		$(TOOL) iverilog -g2012 -s tmds_sparkle_tb -Ptmds_sparkle_tb.DENSITY=$$1 \
+			-Ptmds_sparkle_tb.MASK_ZERO=$$2 \
+			-o $(BUILD_DIR)/tmds_sparkle_tb src/tmds_sparkle.v sim/tmds_sparkle_tb.v || exit $$?; \
+		$(TOOL) vvp $(BUILD_DIR)/tmds_sparkle_tb || exit $$?; \
+	done
 
 # A broken input is shown as noise, not a black screen or a frozen line, and a
 # real signal still locks as fast.  FREE_RUN=0 is the negative control: the

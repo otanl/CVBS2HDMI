@@ -57,12 +57,6 @@ module adc_front #(
     input  wire [7:0] adc_d,
     output wire       adc_clk,
     input  wire [3:0] manual_rot,     // with AUTO off
-    // Glitch: move the converter's clock this many tenths of a conversion off
-    // the calibrated rotation, 0..9.  Reads then land in the switching window
-    // or on the neighbouring conversion, and while it is non-zero the tracking
-    // neither counts nor re-sweeps, so zero puts the calibrated read straight
-    // back.
-    input  wire [3:0] rot_skew,
     output reg  [7:0] sample,         // one conversion per pclk
     output wire [3:0] rot_in_use,
     output reg        cal_done,
@@ -84,10 +78,8 @@ module adc_front #(
     reg  [2:0] ph = 3'd0;             // which pair of half-cycles, 0..4
     reg  [9:0] pat = 10'b1111100000;  // bit 0 is sent first
     reg        ck0 = 1'b0, ck1 = 1'b0;
-    // The rotation actually sent; see rot_out below.
-    reg  [3:0] rot_out = 4'd0;
     always @(posedge fclk) begin
-        rot_f1 <= rot_out;            // changes rarely; two stages are plenty
+        rot_f1 <= rot;                // changes rarely; two stages are plenty
         rot_f2 <= rot_f1;
         ph     <= (ph == 3'd4) ? 3'd0 : ph + 3'd1;
         case (rot_f2)                 // 1111100000 rotated right by rot_f2
@@ -165,12 +157,6 @@ module adc_front #(
     localparam [WIN_W:0] MIN_PEAK = WIN >> 6;
 
     reg  [2:0]     st;
-    // The rotation actually sent to the converter: the calibrated one, skewed
-    // only once the calibration has settled.
-    wire [4:0] rot_sum = {1'b0, rot} + {1'b0, rot_skew};
-    always @(posedge pclk)
-        rot_out <= (st != S_TRACK || rot_skew == 4'd0) ? rot
-                 : (rot_sum >= 5'd10) ? rot_sum[3:0] - 4'd10 : rot_sum[3:0];
     reg  [WIN_W:0] n;                 // samples into this window
     reg  [WIN_W:0] cnt_x, cnt_y, cnt_xa, cnt_ya;
     reg  [WIN_W:0] cx [0:9];
@@ -331,9 +317,7 @@ module adc_front #(
                     n <= 0; cnt_x <= 0; st <= S_TRACK;
                 end
             end
-            S_TRACK: if (rot_skew != 4'd0) begin
-                n <= 0; cnt_x <= 0;       // skewed on purpose: nothing to track
-            end else begin
+            S_TRACK: begin
                 n <= n + 1'b1;
                 if (track_differ && !cnt_x[WIN_W]) cnt_x <= cnt_x + 1'b1;
                 if (n == WIN - 1) begin

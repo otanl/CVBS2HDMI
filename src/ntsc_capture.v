@@ -163,7 +163,8 @@ module ntsc_capture #(
     output wire [255:0] hist_flat
 );
     // The converter's interface and its read timing: see adc_front.
-    wire [7:0] adc_r;
+    wire [7:0] adc_raw;          // as read
+    wire [7:0] adc_r;            // as decoded: adc_raw through fx_adc's faults
     reg        otr_r;
     wire [ADC_WIN_W:0] adc_track_w;
     assign adc_track = adc_track_w;   // WIN_W <= 15
@@ -176,28 +177,45 @@ module ntsc_capture #(
     // All zero is the decoder exactly as it is without them.
     wire [7:0] fx_slice = fx[7:0];     // sync slicer set higher: picture reads as sync
     wire [7:0] fx_hhold = fx[15:8];    // real syncs ignored, flywheel detuned
-    //         fx[23:16] rolls the output frame against the field (top_ntsc_hdmi)
-    wire [7:0] fx_nco   = fx[31:24];   // subcarrier reference off frequency
-    wire [7:0] fx_yc    = fx[39:32];   // luma filter opened: Y/C separation lost
-    wire [7:0] fx_adc   = fx[47:40];   // converter clock off its calibrated phase
-    wire [7:0] fx_black = fx[55:48];   // black measured inside the picture
+    wire [7:0] fx_stretch = fx[23:16]; // lines resampled at random rates
+    wire [7:0] fx_col   = fx[31:24];   // colour reference collapsing: burst and oscillator
+    //         fx[39:32] corrupts the TMDS symbols (top_ntsc_hdmi, tmds_sparkle)
+    wire [7:0] fx_adc   = fx[47:40];   // the converter's bus failing, as it did here
+    wire [7:0] fx_wrap  = fx[55:48];   // colour matrix overdriven, and wrapping
     wire [7:0] fx_hold  = fx[63:56];   // lines left unpublished: the store repeats
     reg  [31:0] fx_rng = 32'h1D87_2A93;
     always @(posedge clk) fx_rng <= {fx_rng[30:0], fx_rng[31] ^ fx_rng[21] ^ fx_rng[1] ^ fx_rng[0]};
-    // fx_nco: a phase ramp added to the burst-locked reference, as if the colour
-    // oscillator ran up to 23 kHz off.  The per-line burst correction measures
-    // the NCO, not this, so the hue turns along every line and on from line to
-    // line: diagonal rainbow bands.  Zero clears it at once.
+    // fx_col, the colour reference collapsing, two ways at once.  A phase ramp
+    // on the burst-locked reference, as if the colour oscillator ran up to
+    // 23 kHz off: the per-line burst correction measures the NCO, not this, so
+    // the hue turns along every line and on down the picture.  And the burst
+    // gate slides into the picture (burst_shift): the CORDIC takes a bar's
+    // chroma for the burst and the loop is pulled towards it.  Zero clears both
+    // at once.
     reg  [31:0] fx_phase = 32'd0;
-    always @(posedge clk) fx_phase <= (fx_nco == 8'd0) ? 32'd0 : fx_phase + {10'd0, fx_nco, 14'd0};
-    // Converter clock: 1..9 tenths of a conversion off the calibrated rotation.
-    wire [10:0] fx_adc9  = {3'd0, fx_adc} + {fx_adc, 3'd0};
-    wire [3:0]  fx_rot   = (fx_adc == 8'd0) ? 4'd0 : fx_adc9[10:8] + 4'd1;
+    always @(posedge clk) fx_phase <= (fx_col == 8'd0) ? 32'd0 : fx_phase + {10'd0, fx_col, 14'd0};
+    // fx_adc: the bus faults this board actually had, in the order they get
+    // worse.  First the LVDS-receiver misread of bits 0/1 and 4/5 (a pair read
+    // wrong when its two bits are equal, probability rising to certain by 64),
+    // then bits 6, 3 and 2 stuck low as on the old pins (from 96, 128, 160: the
+    // 24-code converter), then pairs transposed (192) and the bus reversed
+    // (224).  Everything downstream -- slicer, burst, luma, chroma -- decodes
+    // what the faulty bus delivers.
+    wire [7:0] fx_p      = (fx_adc >= 8'd64) ? 8'hFF : {fx_adc[5:0], 2'b00};
+    wire       fx_f01    = (fx_adc != 8'd0) && (adc_raw[1] == adc_raw[0]) && (fx_rng[7:0] < fx_p);
+    wire       fx_f45    = (fx_adc != 8'd0) && (adc_raw[5] == adc_raw[4]) && (fx_rng[23:16] < fx_p);
+    wire [7:0] fx_g1     = adc_raw ^ {2'b00, fx_f45, fx_f45, 2'b00, fx_f01, fx_f01};
+    wire [7:0] fx_g2     = fx_g1 & ~{1'b0, fx_adc >= 8'd96, 2'b00,
+                                     fx_adc >= 8'd128, fx_adc >= 8'd160, 2'b00};
+    wire [7:0] fx_g3     = (fx_adc >= 8'd192) ? {fx_g2[7:6], fx_g2[4], fx_g2[5],
+                                                 fx_g2[2], fx_g2[3], fx_g2[1:0]} : fx_g2;
+    assign adc_r = (fx_adc >= 8'd224) ? {fx_g3[0], fx_g3[1], fx_g3[2], fx_g3[3],
+                                         fx_g3[4], fx_g3[5], fx_g3[6], fx_g3[7]} : fx_g3;
 
     adc_front #(.AUTO(AUTO_PHASE), .WIN_W(ADC_WIN_W), .CLK_D1_FIRST(ADC_CLK_SWAP),
                 .DIAG(ADC_DIAG)) u_adc (
         .pclk(clk), .fclk(fclk), .rst_n(rst_n), .adc_d(adc_d), .adc_clk(adc_clk),
-        .manual_rot(rot_sel), .rot_skew(fx_rot), .sample(adc_r), .rot_in_use(rot_in_use),
+        .manual_rot(rot_sel), .sample(adc_raw), .rot_in_use(rot_in_use),
         .cal_done(adc_cal_done), .sweeps(adc_sweeps), .pair_x(adc_pair_x),
         .track_count(adc_track_w),
         .dbg_rot(adc_dbg_rot), .dbg_cx(adc_dbg_cx_w), .dbg_cy(adc_dbg_cy_w),
@@ -471,11 +489,12 @@ module ntsc_capture #(
     assign black_out = black;
 
     wire [11:0] cpos      = ccnt + lag;
-    wire        in_burst  = (cpos >= BURST_START) && (cpos < BURST_END);
-    // fx_black moves the back porch window up to 478 samples into the picture
-    // and takes black from it raw, so every line's black follows its content.
-    wire [11:0] bp_shift  = {3'd0, fx_black, 1'b0};
-    wire        in_bp     = (cpos >= BP_START + bp_shift) && (cpos < BP_END + bp_shift);
+    // fx_col slides the burst gate up to 478 samples into the picture.  Grey
+    // under the gate reads too weak to count, so the hue holds and then jumps
+    // as the gate crosses into colour.
+    wire [11:0] burst_shift = {3'd0, fx_col, 1'b0};
+    wire        in_burst  = (cpos >= BURST_START + burst_shift) && (cpos < BURST_END + burst_shift);
+    wire        in_bp     = (cpos >= BP_START) && (cpos < BP_END);
     wire        in_active = (cpos >= ACTIVE_START) &&
                             (cpos <  ACTIVE_START + 2 * ACTIVE_PIXELS);
     // The colour pipeline -- mixer, moving sum, gain and matrix -- delivers
@@ -487,6 +506,18 @@ module ntsc_capture #(
     wire        in_write  = (wpos >= ACTIVE_START) &&
                             (wpos <  ACTIVE_START + 2 * ACTIVE_PIXELS);
     wire [11:0] a_idx     = wpos - ACTIVE_START[11:0];
+    // fx_stretch: pixels per eight samples on this line; 4 is normal.
+    reg  [3:0]  st_m = 4'd4;
+    wire [15:0] st_prod   = a_idx * st_m;
+    wire [13:0] st_addr   = st_prod[15:3];
+    function [3:0] st_table;
+        input [2:0] k;
+        case (k)
+            3'd0: st_table = 4'd2;  3'd1: st_table = 4'd3;  3'd2: st_table = 4'd5;
+            3'd3: st_table = 4'd6;  3'd4: st_table = 4'd7;  3'd5: st_table = 4'd8;
+            3'd6: st_table = 4'd2;  default: st_table = 4'd8;
+        endcase
+    endfunction
 
     wire [31:0] nco_ref;
     reg  [7:0] dl [0:6];
@@ -497,14 +528,7 @@ module ntsc_capture #(
     // neither biases the back porch upward nor wraps at ADC code 255.
     wire [16:0] s7x73 = ({6'd0, sum7} << 6) + ({6'd0, sum7} << 3) +
                         {6'd0, sum7} + 17'd256;
-    wire [7:0] luma_lp0 = s7x73[16:9];
-    // fx_yc blends luma from the boxcar towards the raw sample: the subcarrier
-    // leaks into luma as a fine crawl and chroma, the sample less luma, fades.
-    wire signed [8:0]  yc_hp   = $signed({1'b0, dl[3]}) - $signed({1'b0, luma_lp0});
-    wire signed [17:0] yc_prod = yc_hp * $signed({1'b0, fx_yc});
-    wire signed [9:0]  yc_add  = yc_prod[17:8];
-    wire signed [10:0] yc_luma = $signed({3'b0, luma_lp0}) + yc_add;
-    wire [7:0] luma_lp = yc_luma[10] ? 8'd0 : (yc_luma[9:8] != 2'b00) ? 8'hFF : yc_luma[7:0];
+    wire [7:0] luma_lp = s7x73[16:9];
     reg [31:0] ref_delay [0:3];
     reg [7:0] y_delay [0:5];
     reg signed [20:0] u_delay [0:6], v_delay [0:6];
@@ -581,10 +605,20 @@ module ntsc_capture #(
     reg signed [15:0] u_s, v_s;
     reg [7:0] luma_r, luma_matrix;
 
-    wire signed [23:0] v73  = (v_s <<< 6) + (v_s <<< 3) + v_s;
-    wire signed [23:0] u101 = (u_s <<< 6) + (u_s <<< 5) + (u_s <<< 2) + u_s;
-    wire signed [23:0] v149 = (v_s <<< 7) + (v_s <<< 4) + (v_s <<< 2) + v_s;
-    wire signed [23:0] u130 = (u_s <<< 7) + (u_s <<< 1);
+    // fx_wrap overdrives the colour matrix and takes away its clip.  Chroma
+    // gains up to 4.7 times and luma up to 2.9, and a result past 255 or
+    // under 0 keeps its low eight bits instead of stopping there, so the most
+    // saturated and brightest parts fold over into their complements: neon
+    // bands, solarised whites.  At zero the gains are exactly one.
+    wire [8:0]         wr_cg = 9'd64 + {1'b0, fx_wrap};
+    wire signed [25:0] u_gm  = u_s * $signed({1'b0, wr_cg});
+    wire signed [25:0] v_gm  = v_s * $signed({1'b0, wr_cg});
+    wire signed [15:0] u_g   = u_gm[21:6];
+    wire signed [15:0] v_g   = v_gm[21:6];
+    wire signed [23:0] v73  = (v_g <<< 6) + (v_g <<< 3) + v_g;
+    wire signed [23:0] u101 = (u_g <<< 6) + (u_g <<< 5) + (u_g <<< 2) + u_g;
+    wire signed [23:0] v149 = (v_g <<< 7) + (v_g <<< 4) + (v_g <<< 2) + v_g;
+    wire signed [23:0] u130 = (u_g <<< 7) + (u_g <<< 1);
 
     reg signed [23:0] v73_r, u101_r, v149_r, u130_r;
     // Gain, then matrix products, each registered: two more samples of PIPE.
@@ -602,7 +636,9 @@ module ntsc_capture #(
             luma_matrix <= luma_r;
         end
     end
-    wire signed [23:0] y_ext = {16'd0, luma_matrix};
+    wire [8:0]         wr_yg = 9'd64 + {2'b0, fx_wrap[7:1]};
+    wire [16:0]        y_gm  = luma_matrix * wr_yg;
+    wire signed [23:0] y_ext = {13'd0, y_gm[16:6]};
     wire signed [23:0] r_raw = y_ext + (v73_r  >>> 6);
     wire signed [23:0] g_raw = y_ext - (u101_r >>> 8) - (v149_r >>> 8);
     wire signed [23:0] b_raw = y_ext + (u130_r >>> 6);
@@ -612,7 +648,10 @@ module ntsc_capture #(
     wire [7:0] b_clip = b_raw[23] ? 8'd0 : (|b_raw[22:8] ? 8'd255 : b_raw[7:0]);
     // Clip by bits, not by a signed compare against 255 (apicula#541): once the
     // sign bit is clear, anything above bit 7 means more than 255.
-    wire [23:0] rgb = (COLOUR && burst_locked) ? {r_clip, g_clip, b_clip}
+    wire [23:0] rgb = (fx_wrap != 8'd0)
+                    ? ((COLOUR && burst_locked) ? {r_raw[7:0], g_raw[7:0], b_raw[7:0]}
+                                                : {3{y_ext[7:0]}})
+                    : (COLOUR && burst_locked) ? {r_clip, g_clip, b_clip}
                                               : {luma_matrix, luma_matrix, luma_matrix};
 
     always @(posedge clk or negedge rst_n) begin
@@ -891,13 +930,16 @@ module ntsc_capture #(
                     ccnt <= ccnt + 12'd1;
                 end
 
-                if (cpos == BP_START - 1 + bp_shift) begin
+                if (cpos == BP_START - 1) begin
                     bp_acc <= 13'd0;
                 end else if (in_bp) begin
                     bp_acc <= bp_acc + {5'd0, adc_r};
-                end else if (cpos == BP_END + bp_shift) begin
-                    if (fx_black != 8'd0) begin
-                        black <= LEGACY_TIMING ? bp_acc[12:5] : bp_val;
+                end else if (cpos == BP_END) begin
+                    if (fx_slice != 8'd0 || fx_hhold != 8'd0) begin
+                        // Held.  Lines start in the wrong place, so this window
+                        // is on the picture; followed, black climbed towards
+                        // white, the slice (set from black) climbed with it, and
+                        // the screen went black within seconds.
                     end else if (LEGACY_TIMING) begin
                         black <= bp_acc[12:5];        // 32-sample average
                     end else begin
@@ -909,13 +951,23 @@ module ntsc_capture #(
                 end
                 if (line_real) fp_line <= fp_cand;   // this line's front porch
 
+                // fx_stretch: a line picks its resampling rate just before it
+                // is written -- normally a pixel every two samples, but with
+                // probability fx_stretch/256 anything from one every four
+                // (the whole line squeezed into the left half) to one every
+                // sample (its left half stretched across the screen).  What a
+                // squeezed line does not cover still holds an older line.
+                if (wpos == ACTIVE_START[11:0] - 12'd1)
+                    st_m <= (fx_stretch != 8'd0 && fx_rng[31:24] < fx_stretch)
+                          ? st_table(fx_rng[18:16]) : 4'd4;
                 if (in_write) begin
-                    if (!a_idx[0]) begin
-                        s_even <= adc_r;
-                    end else begin
+                    if (!a_idx[0]) s_even <= adc_r;
+                    if ((st_m != 4'd4) ? (st_addr < 14'd640) : a_idx[0]) begin
                         wr_en   <= 1'b1;
-                        wr_addr <= {wr_bank, a_idx[10:1]};
+                        wr_addr <= {wr_bank, (st_m != 4'd4) ? st_addr[9:0] : a_idx[10:1]};
                         wr_data <= rgb;
+                    end
+                    begin
                         if (a_idx == 2 * ACTIVE_PIXELS - 1) begin
                             // Publish only after every pixel was written.
                             // Sync detection and free-running position wrap

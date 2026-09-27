@@ -2481,11 +2481,11 @@ clean picture exactly.  ntsc_capture takes them as `fx`, a byte each:
 |---|---|---|
 | 1 | `fx_slice` | sync slicer raised from just above black to just under white, and long runs accepted: dark picture reads as sync, so the picture decides where lines start |
 | 2 | `fx_hhold` | real syncs thrown away (probability fx/256), flywheel and free-running starts up to 59 samples long: horizontal hold lost |
-| 3 | vertical roll (top) | the vertical servo's target walks on, the servo follows a line a frame, the picture rolls; knob off, it walks home the same way |
-| 4 | `fx_nco` | a phase ramp on the burst-locked reference, up to 23 kHz: hue turns along and down the picture; the per-line correction measures the NCO and cannot see it |
-| 5 | `fx_yc` | luma blended from the boxcar towards the raw sample: subcarrier crawl in luma, chroma fading |
-| 6 | `fx_adc` | the converter clock 1..9 tenths of a conversion off its calibration (`adc_front`'s `rot_skew`, tracking paused), so reads land in the switching window |
-| 7 | `fx_black` | the back-porch window moved up to 478 samples into the picture, black taken raw: every line's black follows its content |
+| 3 | `fx_stretch` | a line, with probability fx/256, resampled at a random rate -- one pixel per 4 samples (squeezed into the left half) up to one per sample (its left half stretched across); the rest of the bank still holds an older line |
+| 4 | `fx_col` | the colour reference collapsing: a phase ramp on the burst-locked reference, up to 23 kHz, which the per-line correction cannot see, and the burst gate slid up to 478 samples into the picture, where the CORDIC takes a bar's chroma for the burst |
+| 5 | HDMI: `tmds_sparkle` | a TMDS bit error, worked out in the FPGA: a hit pixel (probability (fx/256)^2 per channel) is encoded as its data word, bits flipped, and decoded as the sink would; the real encoder then sends that byte, so every symbol on the wire is valid -- bad-cable sparkle, snow at full |
+| 6 | `fx_adc` | the bus faults this board really had, worsening in order: the LVDS pair misread of bits 0/1 and 4/5, bits 6, 3, 2 stuck low, pairs transposed, the bus reversed |
+| 7 | `fx_wrap` | the colour matrix overdriven (chroma up to 4.7 times, luma 2.9) and its clip removed: past 255 a value keeps its low eight bits, so saturated and bright parts fold into their complements |
 | 8 | `fx_hold` | lines left unpublished (probability fx/256): the line store repeats the last one |
 | switch | | green in the diagnostic view enables them all |
 
@@ -2495,13 +2495,37 @@ knob at the stop exactly off whatever the converter's noise.  With every knob
 left and the switch on, the board measures what it did without the feature:
 rotation 0.5 degrees, hues +7/-9/-2/-4/-6/+4, colour 60/60, no dropped rows.
 
+First board trial, and what it changed:
+
+- **Knob 6 did nothing visible** when it moved the converter's clock off its
+  calibrated phase.  A read in the switching window only errs where the
+  sample changes, and colour bars are flat.  Replaced by the fault list above.
+- **Knob 3 only scrolled.**  The vertical servo may trim one line a frame, or
+  the sink drops the link, so a vertical-hold roll is a slow, clean scroll.
+  Replaced by the burst gate -- which then overlapped the NCO ramp on knob 4
+  (both only turn the hue), so the two became one knob, and knob 5's Y/C
+  blend, too gentle to see on bars, gave way to the TMDS sparkle.  Knob 3 is
+  now the line stretch.
+- **The sparkle, done on the wire, took the picture away.**  Corrupted TMDS
+  symbols -- control tokens untouched and none made -- still made this sink
+  drop the image: it counts bad characters.  It is now computed in the pixel
+  domain, as the sink would decode the error, and sent as valid symbols.
+- **Knob 7, moving the black window, stayed dull** on bars (the whole picture
+  steps in brightness); it is now the wrapping matrix.
+- **Knob 1 went black within seconds.**  The raised slice falls below
+  threshold inside the picture, the front-porch capture then reads picture
+  (the grey staircase ends bright), black followed it up to white, and the
+  slice, set from black, rose with it.  The recording could not show it -- it
+  holds bar lines only.  Black is now held while knob 1 or 2 is off zero.
+
 `make sim-video-glitch` applies each effect (and all together) for 50 lines of
 the colour-bar stimulus: it must visibly break the picture -- over 1000 wrong
 colour channels, or for the hold, lines unpublished -- and 200 lines after it
 is removed the bars must decode to the published values again, `max_error`
-17 as in sim-video.  The converter skew cannot show against a model with no
-switching window and is checked for recovery only; the roll is in the top
-level and was checked on the board.
+17 as in sim-video.  The sparkle is below the capture and has its own bench,
+`make sim-sparkle`: the rate following (fx/256)^2 (0.607 against 0.609 at 200,
+0.063 at 64), blanking untouched, nothing at 0, and an empty error on every
+pixel round-tripping exactly -- the modelled encoder and decoder are inverses.
 
 The first slice mapping added a fixed 0..119 codes to the normal threshold:
 nothing below about a quarter turn, where the slice was still under blanking,

@@ -178,8 +178,8 @@ module top_ntsc_hdmi #(
     end
 
     // ---- the Unit 8Angle: glitch controls ------------------------------------
-    // Eight knobs, each breaking one stage of the decoder (ntsc_capture's fx_*,
-    // and the vertical roll below).  A knob turned fully left is off: a dead
+    // Eight knobs, each breaking one stage of the decoder (ntsc_capture's
+    // fx_*) or, knob 5, of the HDMI encoder.  A knob turned fully left is off: a dead
     // band of KNOB_DEAD counts keeps the picture exactly clean there whatever
     // the converter's noise.  The switch in the green position (as the
     // diagnostic view shows it) enables them, and nothing acts while the unit
@@ -276,26 +276,8 @@ module top_ntsc_hdmi #(
     reg        v_longer, v_shorter;
 
     localparam [10:0] V_TARGET = 11'd488;
-    // fx[23:16], vertical hold: the servo's target walks on by fx/256 of a line
-    // every frame, and the servo, which only ever trims one line a frame so the
-    // sink keeps its lock, follows it -- the picture rolls.  Knob off, the
-    // target comes home and the servo walks the picture back, a line a frame.
-    wire [7:0]  fx_vroll = fx[23:16];
-    reg  [9:0]  v_off = 10'd0;
-    reg  [7:0]  v_frac = 8'd0;
-    wire [8:0]  v_frac_next = {1'b0, v_frac} + {1'b0, fx_vroll};
-    always @(posedge pixel_clk) begin
-        if (fx_vroll == 8'd0) begin
-            v_off <= 10'd0; v_frac <= 8'd0;
-        end else if (x == 11'd0 && y == 11'd0) begin
-            v_frac <= v_frac_next[7:0];
-            if (v_frac_next[8]) v_off <= (v_off == 10'd524) ? 10'd0 : v_off + 10'd1;
-        end
-    end
-    wire [10:0] v_tsum   = V_TARGET + {1'b0, v_off};
-    wire [10:0] v_target = (v_tsum >= 11'd525) ? v_tsum - 11'd525 : v_tsum;
-    wire [10:0] y_rel = (y >= v_target) ? (y - v_target)
-                                        : (y + 11'd525 - v_target);
+    wire [10:0] y_rel = (y >= V_TARGET) ? (y - V_TARGET)
+                                        : (y + 11'd525 - V_TARGET);
     always @(posedge pixel_clk or negedge vid_rst_n) begin
         if (!vid_rst_n) begin
             y_at_field <= 11'd0; v_longer <= 1'b0; v_shorter <= 1'b0;
@@ -666,6 +648,9 @@ module top_ntsc_hdmi #(
         .pixel_clk(pixel_clk), .serial_clk(serial_clk), .reset_n(vid_rst_n),
         .active(active_d), .hsync(hsync_d), .vsync(vsync_d),
         .red(out_r), .green(out_g), .blue(out_b),
+        // Knob 5: the TMDS symbols themselves corrupted, a layer below the
+        // picture (tmds_sparkle).
+        .sparkle(fx[39:32]),
         .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n),
         .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n)
     );
