@@ -51,8 +51,8 @@ Pin assignment (the single source is `constraints/tangnano20k_adc_probe.cst`):
 | `adc_d[2]` | 72 | | `adc_otr` | 71 |
 | `adc_d[3]` | 76 | | I²C SCL / SDA | 48 / 49 |
 
-The data bus is not in physical pin order. The board's revision history, and the pins that must
-not be used, are in `docs/pcb-respin.md` (Japanese).
+The data bus is not in physical pin order. The board's revision history, the pins that must not
+be used, and the fixes planned for the next revision are in `docs/pcb-respin.md` (Japanese).
 
 **Caution**: pin 3 of the Grove connectors is 5 V. A device that pulls I²C up to 5 V puts 5 V
 on the FPGA's pins. The 8Angle pulls up to its own 3.3 V and is safe.
