@@ -3347,6 +3347,147 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Device:R_Small"
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(offset 0.254)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "R"
+				(at 0 0 90)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.016 1.016)
+					)
+				)
+			)
+			(property "Value" "R_Small"
+				(at 1.778 0 90)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Resistor, small symbol"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "R resistor"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "R_*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "R_Small_0_1"
+				(rectangle
+					(start -0.762 1.778)
+					(end 0.762 -1.778)
+					(stroke
+						(width 0.2032)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "R_Small_1_1"
+				(pin passive line
+					(at 0 2.54 270)
+					(length 0.762)
+					(name ""
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 0 -2.54 90)
+					(length 0.762)
+					(name ""
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "Mechanical:MountingHole"
 			(pin_names
 				(offset 1.016)
@@ -4075,6 +4216,12 @@
 		(uuid "4ec5337e-11df-4752-889a-119d9e9c0d43")
 	)
 	(junction
+		(at 115.57 54.61)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "5118e5d5-de36-43d1-a44b-dd4dc0cdaa60")
+	)
+	(junction
 		(at 69.85 87.63)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -4121,6 +4268,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "7b76effa-302a-4b8c-a955-e38b01e7d4ec")
+	)
+	(junction
+		(at 115.57 49.53)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "7e9e799d-d53f-4a24-9009-74d7bac68bf1")
 	)
 	(junction
 		(at 142.24 38.1)
@@ -4243,16 +4396,16 @@
 		(uuid "ffe17bfe-dbf1-4082-bacb-d39927cd8e6e")
 	)
 	(no_connect
-		(at 86.36 135.89)
-		(uuid "04a86217-ca8d-40de-aa9b-69966a13b329")
+		(at 86.36 140.97)
+		(uuid "05d8b0d0-1c06-47d4-a30f-a3fec1b2385c")
+	)
+	(no_connect
+		(at 143.51 146.05)
+		(uuid "102e42ad-217d-4609-9c03-ad243392f36b")
 	)
 	(no_connect
 		(at 50.8 143.51)
 		(uuid "1957e171-d743-4650-a639-1b191fb97fe3")
-	)
-	(no_connect
-		(at 86.36 171.45)
-		(uuid "29277a5c-b4b5-47bc-8853-6b01f6bc3271")
 	)
 	(no_connect
 		(at 86.36 176.53)
@@ -4263,8 +4416,8 @@
 		(uuid "31fff2ce-3af4-4245-b623-d279f8d0f275")
 	)
 	(no_connect
-		(at 50.8 135.89)
-		(uuid "4aa631e7-c18e-4112-8793-2369d6e928bb")
+		(at 143.51 148.59)
+		(uuid "340d9df3-10af-4955-b94d-71e1e5860e56")
 	)
 	(no_connect
 		(at 86.36 146.05)
@@ -4287,8 +4440,16 @@
 		(uuid "928e2da0-da95-4447-bfbc-1927df72cf2a")
 	)
 	(no_connect
+		(at 86.36 143.51)
+		(uuid "94962ae2-2a62-4ae6-85dc-5f5eeb5fcafb")
+	)
+	(no_connect
 		(at 50.8 153.67)
 		(uuid "a8b790ff-c7fd-4374-8b05-fe4e88a94bc2")
+	)
+	(no_connect
+		(at 50.8 163.83)
+		(uuid "ab522ece-9ae9-45b4-9eee-d67389c89c1f")
 	)
 	(no_connect
 		(at 86.36 148.59)
@@ -5353,7 +5514,6 @@
 	(global_label "D2"
 		(shape input)
 		(at 184.15 72.39 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5377,7 +5537,6 @@
 	(global_label "VREF"
 		(shape input)
 		(at 93.98 54.61 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5401,7 +5560,6 @@
 	(global_label "48"
 		(shape input)
 		(at 143.51 140.97 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5425,7 +5583,6 @@
 	(global_label "OTR"
 		(shape input)
 		(at 162.56 62.23 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5449,7 +5606,6 @@
 	(global_label "48"
 		(shape input)
 		(at 229.87 115.57 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5473,7 +5629,6 @@
 	(global_label "D7"
 		(shape input)
 		(at 50.8 140.97 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5497,7 +5652,6 @@
 	(global_label "D7"
 		(shape input)
 		(at 184.15 85.09 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5521,7 +5675,6 @@
 	(global_label "REFTF"
 		(shape input)
 		(at 118.11 64.77 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5545,7 +5698,6 @@
 	(global_label "D0"
 		(shape input)
 		(at 184.15 67.31 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5569,7 +5721,6 @@
 	(global_label "D3"
 		(shape input)
 		(at 184.15 74.93 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5593,7 +5744,6 @@
 	(global_label "D4"
 		(shape input)
 		(at 50.8 158.75 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5617,7 +5767,6 @@
 	(global_label "18"
 		(shape input)
 		(at 43.18 173.99 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5641,7 +5790,6 @@
 	(global_label "48"
 		(shape input)
 		(at 195.58 115.57 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5665,7 +5813,6 @@
 	(global_label "D1"
 		(shape input)
 		(at 50.8 151.13 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5689,7 +5836,6 @@
 	(global_label "CLK"
 		(shape input)
 		(at 175.26 90.17 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5713,7 +5859,6 @@
 	(global_label "REFBF"
 		(shape input)
 		(at 118.11 74.93 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5737,7 +5882,6 @@
 	(global_label "OTR"
 		(shape input)
 		(at 86.36 173.99 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5761,7 +5905,6 @@
 	(global_label "49"
 		(shape input)
 		(at 102.87 158.75 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5785,7 +5928,6 @@
 	(global_label "49"
 		(shape input)
 		(at 143.51 143.51 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5809,7 +5951,6 @@
 	(global_label "D1"
 		(shape input)
 		(at 184.15 69.85 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5833,7 +5974,6 @@
 	(global_label "REFBF"
 		(shape input)
 		(at 82.55 91.44 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5857,7 +5997,6 @@
 	(global_label "48"
 		(shape input)
 		(at 102.87 153.67 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5881,7 +6020,6 @@
 	(global_label "17"
 		(shape input)
 		(at 143.51 130.81 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5905,7 +6043,6 @@
 	(global_label "D3"
 		(shape input)
 		(at 86.36 135.89 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5929,7 +6066,6 @@
 	(global_label "20"
 		(shape input)
 		(at 143.51 133.35 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5953,7 +6089,6 @@
 	(global_label "49"
 		(shape input)
 		(at 195.58 118.11 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5977,7 +6112,6 @@
 	(global_label "20"
 		(shape input)
 		(at 43.18 168.91 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6001,7 +6135,6 @@
 	(global_label "CLK"
 		(shape input)
 		(at 50.8 130.81 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6025,7 +6158,6 @@
 	(global_label "49"
 		(shape input)
 		(at 229.87 118.11 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6049,7 +6181,6 @@
 	(global_label "VREF"
 		(shape input)
 		(at 111.76 83.82 270)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6073,7 +6204,6 @@
 	(global_label "17"
 		(shape input)
 		(at 43.18 166.37 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6097,7 +6227,6 @@
 	(global_label "19"
 		(shape input)
 		(at 143.51 135.89 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6121,7 +6250,6 @@
 	(global_label "19"
 		(shape input)
 		(at 43.18 171.45 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6145,7 +6273,6 @@
 	(global_label "CLAMP"
 		(shape input)
 		(at 171.45 49.53 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6169,7 +6296,6 @@
 	(global_label "D6"
 		(shape input)
 		(at 184.15 82.55 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6193,7 +6319,6 @@
 	(global_label "D4"
 		(shape input)
 		(at 184.15 77.47 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6217,7 +6342,6 @@
 	(global_label "D5"
 		(shape input)
 		(at 50.8 161.29 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6241,7 +6365,6 @@
 	(global_label "D0"
 		(shape input)
 		(at 50.8 148.59 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6265,7 +6388,6 @@
 	(global_label "REFTF"
 		(shape input)
 		(at 69.85 74.93 90)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6289,7 +6411,6 @@
 	(global_label "VREF"
 		(shape input)
 		(at 203.2 50.8 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6313,7 +6434,6 @@
 	(global_label "D6"
 		(shape input)
 		(at 50.8 135.89 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6337,7 +6457,6 @@
 	(global_label "D2"
 		(shape input)
 		(at 86.36 171.45 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6361,7 +6480,6 @@
 	(global_label "D5"
 		(shape input)
 		(at 184.15 80.01 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6385,7 +6503,6 @@
 	(global_label "CLAMP"
 		(shape input)
 		(at 50.8 133.35 180)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6409,7 +6526,6 @@
 	(global_label "18"
 		(shape input)
 		(at 143.51 138.43 0)
-		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -6451,7 +6567,7 @@
 				)
 			)
 		)
-		(property "Value" "FerriteBead"
+		(property "Value" "600R@100MHz"
 			(at 31.496 181.864 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6461,7 +6577,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_THT:R_Axial_DIN0204_L3.6mm_D1.6mm_P5.08mm_Horizontal"
+		(property "Footprint" "Inductor_SMD:L_0805_2012Metric"
 			(at 34.29 178.308 90)
 			(hide yes)
 			(show_name no)
@@ -6583,6 +6699,88 @@
 			(project "tangADC"
 				(path "/58c7d11b-3319-4019-804f-829ad77d6f01"
 					(reference "TP1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 115.57 52.07 0)
+		(mirror y)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "0a788fb9-dd1a-4e6a-9691-81c3e2f5edb1")
+		(property "Reference" "R19"
+			(at 113.03 50.7999 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "47k"
+			(at 113.03 53.3399 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 115.57 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 115.57 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor, small symbol"
+			(at 115.57 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "f4a52dda-4006-4b42-961e-e01b5e8f23dc")
+		)
+		(pin "2"
+			(uuid "3ada23b9-de32-4c88-a1b2-dc6a403a3a88")
+		)
+		(instances
+			(project "tangADC"
+				(path "/58c7d11b-3319-4019-804f-829ad77d6f01"
+					(reference "R19")
 					(unit 1)
 				)
 			)
@@ -7159,7 +7357,7 @@
 				)
 			)
 		)
-		(property "Value" "FerriteBead"
+		(property "Value" "600R@100MHz"
 			(at 102.108 175.514 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7169,7 +7367,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_THT:R_Axial_DIN0204_L3.6mm_D1.6mm_P5.08mm_Horizontal"
+		(property "Footprint" "Inductor_SMD:L_0805_2012Metric"
 			(at 100.33 170.688 90)
 			(hide yes)
 			(show_name no)
@@ -7489,7 +7687,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_THT:C_Disc_D3.0mm_W2.0mm_P2.50mm"
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
 			(at 112.0648 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -12878,7 +13076,7 @@
 				)
 			)
 		)
-		(property "Value" "22k"
+		(property "Value" "10k"
 			(at 97.536 56.642 90)
 			(show_name no)
 			(do_not_autoplace no)
