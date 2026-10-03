@@ -2442,8 +2442,8 @@ placement in KiCad's `.history`.  Edit the board here from now on.
 
 **The design files moved on to v0.2 on 2026-10-03, and v0.2 has not been built** (*Planned*).
 Everything in this section marked *Verified*, and every measurement in this file, is the v0.1
-board: its design files are tag `v0.1`, and `hardware/jlcpcb/` still holds v0.1's production
-files.  `docs/pcb-respin.md` §4.6 is the list of what changed, from a
+board: its design and production files are tag `v0.1`.  `hardware/`, production files included,
+is v0.2.  `docs/pcb-respin.md` §4.6 is the list of what changed, from a
 `kicad-cli pcb drc --schematic-parity` run of the as-built board (nothing unconnected, no parity
 error, so v0.1 stands):
 
@@ -2466,6 +2466,16 @@ error, so v0.1 stands):
   under and beside it, and FB2 sits south of its GND track with the module's 3V3 brought under on
   B.Cu.  Vias stand where the four holes were.  The README's "probe both ends of FB1/FB2" is a
   v0.1 instruction; on v0.2 use TP5/TP6 and the module's 3V3 pins.
+- **Nothing JLCPCB places is an Extended part** (12 Basic, 1 Preferred; the user wants it kept
+  so).  C7 is a 1206 ceramic (C1848) on the tantalum's pads, and D1 is an H5VL10B in
+  DFN1006-2L (`D_SOD-882`): no fee-free bidirectional ESD part exists in SOD-323, and a
+  unidirectional one would clip the sync tip of a source that swings below 0 V.  U1 is
+  hand-soldered; the AD9280 is Extended and scarce at JLCPCB.
+- **The production files are made with `kicad-cli`**, by the commands in `docs/pcb-respin.md`
+  §4.7.  Run on the v0.1 board they reproduce seven of the nine ordered Gerber layers and both
+  drill files byte for byte apart from the date, which is what makes them trustworthy.  The LCSC
+  numbers live in `hardware/jlcpcb/project.db` (the JLCPCB-tools plugin's SQLite file), not in
+  the schematic; keep the two in step with the BOM.
 - **Silkscreen says which board it is**: `tangADC v0.2` and `Grove:5V` under J2, `GND` / `IN`
   over J1, and a TP1..TP7 legend under the module (AIN, VREF, CLAMPIN, CLK, 3V3A, 3V3D, GND).
   The two revisions differ in CLAMPIN, so read the marking before reading a clamp measurement.
