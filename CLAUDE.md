@@ -13,15 +13,52 @@ revision notes.
 Everything below marked *Verified* was read out of the hardware design or measured on the bench;
 *Planned* means agreed but not yet built. Keep the distinction when editing.
 
-**Milestone order** (deliberate — do not skip ahead):
+**Milestones** — all three are done as of v0.1. The order was deliberate, and it is also the
+order to debug in:
 
 1. **Prove `adc_d[7:0]` is captured correctly from the AD9280** — **done**
    (`src/adc_probe_top.v`). See *Step 1 status* below.
-2. Monochrome: sync detection + luma → 480p on HDMI — **working** (`make ntsc-program`).
-3. Color: burst-locked NCO, Y/C separation, YUV→RGB. *In progress — real capture in hand.*
+2. Monochrome: sync detection + luma → 480p on HDMI — **done**.
+3. Colour: burst-locked NCO, Y/C separation, YUV→RGB — **done** (`make ntsc-program`), and on
+   top of it 240p, the 1.5× zoom, free-running on a broken input and the 8Angle glitch effects.
 
-Color decode is added *last*. Debugging a chroma PLL on top of an unverified capture path is the
-main way this project can stall.
+Colour was added *last*. Debugging a chroma PLL on top of an unverified capture path is the
+main way this project can stall — and the colour faults that cost the most time here (three dead
+bits, four bits packed as LVDS receivers, a read instant that moved with placement) were all
+capture faults.
+
+### How to read this file
+
+Most of it is a lab notebook, kept in the order things were found, and it corrects itself as it
+goes. **Where two sections disagree, the later-dated one is right**; a section that opens with
+*Superseded* is kept for its reasoning, not its conclusion. Two dates divide the measurements:
+anything before 2026-09-24 went through a converter delivering 24 of 256 codes (*The respun board
+works*), and anything before 2026-09-25 through four ADC bits packed as LVDS receivers (*Bits 0,
+1, 4 and 5 were packed as LVDS receivers*).
+
+What describes the design **as it is now**: *Toolchain*, *Commands*, *Architecture*, *Clocking
+decisions* and *Conventions* at the end of the file, *Hardware*, and *The decoder on the pixel
+clock*. *Step 1/2/3 status* are the bring-up history of earlier designs. `scratchpad/*.py`, named
+in older sections, was never committed; `scripts/` holds what replaced it.
+
+The rules that came out of it and still bind, each argued in the section named:
+
+- **Decide RTL questions in simulation** (`make test`). The board is for measuring, and a board
+  figure counts only from the second capture after programming, with the build loaded more than
+  once (*Measuring the picture*, *The decoder on the pixel clock*).
+- **Every bitstream is packed through `scripts/gowin_pack_io.py`**, never plain `gowin_pack`
+  (*Bits 0, 1, 4 and 5 were packed as LVDS receivers*).
+- **The decoder is synthesised `-nodsp -noalu` and holds no signed comparison** —
+  `make check-signed` (*The decoder on the pixel clock*, *Apicula has an open placement-dependent
+  miscompute bug*).
+- **One rPLL per design**; Apicula cannot pack two on this part (*Step 2 status*).
+- **The converter's read instant is calibrated, never a constant** (`adc_front`; *The sampling
+  instant moves with every placement*).
+- **The analog clamp stays off**; DC restoration is digital (*The analog clamp is disabled by
+  default*).
+- **Diagnostics go on the HDMI output, not the UART** (*Do not trust the serial link*).
+- **No `DRIVE=` or `BANK_VCCIO=` on an LVDS25 constraint** (*9K → 20K porting notes*).
+- **No new bitstream in version control** unless asked for a restore point (*Commands*).
 
 ## Step 1 status — COMPLETE
 
@@ -110,6 +147,11 @@ the pin.** TP4 reads a healthy clock even if AD9280 pin 15 is lifted, and FB2 re
 pin 2 is. The pull test is the electrical way around that for any pin the FPGA can read.
 
 ## Step 2 status — monochrome NTSC on HDMI works
+
+**Superseded (2026-09-26):** this is the first monochrome design. Its clocks (135 MHz, a 27 MHz
+pixel clock, a mod-5 sample clock), the two-bank line buffer, the back-porch window and the frame
+reset on each field have all been replaced since — *Architecture* has the design as built. What
+still holds from the list below: one rPLL, `-nodsp`, a measured sampling instant, no analog clamp.
 
 `src/top_ntsc_hdmi.v`. One rPLL at 135 MHz does everything: `CLKDIV` by five gives the 27 MHz
 pixel clock, and a mod-5 counter gives the 27 MHz ADC sample clock with five capture phases.
@@ -2392,11 +2434,55 @@ full-amplitude burst would not misfire and should turn it back on.
 
 ## Hardware (Verified against `hardware/tangADC.kicad_sch` and `tangADC.kicad_pcb`)
 
-`hardware/` is the board as built and measured (2026-09-16 layout, the respun pins; DRC: no
-unconnected items, schematic parity clean) with the JLCPCB files it was exported to.  It came
+`hardware/` at tag `v0.1` is the board as built and measured (2026-09-16 layout, the respun pins;
+DRC: no unconnected items, schematic parity clean) with the JLCPCB files it was exported to.  It came
 from `~/Downloads/tangADC_kicad`; the copy at `../tangADC_kicad` has the new schematic but a PCB
 still routed to the old pins 42/41/31, and its routed respin exists only as an unrouted
 placement in KiCad's `.history`.  Edit the board here from now on.
+
+**The design files moved on to v0.2 on 2026-10-03, and v0.2 has not been built** (*Planned*).
+Everything in this section marked *Verified*, and every measurement in this file, is the v0.1
+board: its design files are tag `v0.1`, and `hardware/jlcpcb/` still holds v0.1's production
+files.  `docs/pcb-respin.md` §4.6 is the list of what changed, from a
+`kicad-cli pcb drc --schematic-parity` run of the as-built board (nothing unconnected, no parity
+error, so v0.1 stands):
+
+- **AIN gets a DC path** (§3.2): R2 22 k → 10 k, so CLAMPIN is 1.0 V instead of 0.625, and a new
+  **R19, 47 k**, from AIN to CLAMPIN.  On a v0.2 board a forced clamp (`CLAMP_FORCE`,
+  `make clampon-program`) therefore reads about code 128, not 80, and the analog clamp must stay
+  off: it would pin the sync tip at mid-scale.
+- **C13 is an 0603** in the place of the leaded disc, which sat inside U2's courtyard.  The disc's
+  holes were also the layer changes for AIN (to TP1 on B.Cu) and for GND; two vias replace them.
+- **GND vias beside U1's ground pins** 1, 14 and 16..18.  Those pins were never on thermal spokes
+  alone -- each has a 0.4..1 mm track -- so the DRC's six `starved_thermal` errors describe the
+  pour, not the connection, and vias do not clear them: that takes the F.Cu zone's pad
+  connection set to "thermal reliefs for PTH" in the GUI.
+- **The top-edge GND track** is 0.5 mm wide at y = 27.0, 0.69 mm from the edge (it was 0.22
+  against a 0.5 rule).
+- **FB1 and FB2 are 0805 chip beads** (Sunlord GZ2012D601TF, LCSC C1017, a JLCPCB *Basic* part:
+  600 ohm at 100 MHz, 500 mA, 0.3 ohm), where v0.1 has leaded beads on a borrowed resistor
+  footprint.  The leaded parts were also jumpers over the tracks beneath them, which a chip is
+  not: FB1 now straddles the F.Cu GND link from TP7 to U2 pin 20, narrowed from 1 mm to 0.6 mm
+  under and beside it, and FB2 sits south of its GND track with the module's 3V3 brought under on
+  B.Cu.  Vias stand where the four holes were.  The README's "probe both ends of FB1/FB2" is a
+  v0.1 instruction; on v0.2 use TP5/TP6 and the module's 3V3 pins.
+- **Silkscreen says which board it is**: `tangADC v0.2` and `Grove:5V` under J2, `GND` / `IN`
+  over J1, and a TP1..TP7 legend under the module (AIN, VREF, CLAMPIN, CLK, 3V3A, 3V3D, GND).
+  The two revisions differ in CLAMPIN, so read the marking before reading a clamp measurement.
+
+Still open: U2 pin 13 is named `30_IOB14A` and is `30_IOB14B` (the typo is in the upstream
+library), and the libraries for U2 (`0my_project`, nosuz/kicad-symbols-footprints) and J3
+(`RJ-2410N`, a SamacSys download) are not in the project -- both third-party, so bundling them
+into a public repository needs their licences checked first.  The 38 courtyard overlaps (parts
+under the module, by design) and the silkscreen overlaps are cosmetic.
+
+Editing these files goes through the Konnect MCP tools, never by hand.  What that needs: the
+board open in KiCad's **PCB editor** for any PCB edit, and the **schematic editor closed** for
+any schematic edit (those are file-based).  Konnect cannot swap a footprint, edit a zone's
+settings, move a schematic field or a footprint's reference text, or put readable text on the
+back (its text is not mirrored, and its SVG import keeps one polygon); those are GUI steps for
+the user (F8 with "replace footprints" for the first).  Konnect rewrites the whole `.kicad_sch` in its own whitespace, so
+have the user re-save it from the schematic editor before committing, or the diff is every line.
 
 Carrier board `tangADC`: AD9280ARS (U1, SSOP-28) on a DIP-40 socket for the Tang Nano 20K (U2).
 Board is powered from the Tang Nano's own 3V3 (DIP pads 19 and 25) through ferrite beads
@@ -2486,6 +2572,11 @@ AD9280 pin function table. Do not re-litigate this:
 `J1` (RCA) / `J3` (RJ-2410N) → R1 75 Ω shunt termination → D1 PESD5V0U1BA ESD clamp →
 C2 1 µF AC coupling → R3 20 Ω series → C13 100 pF shunt → `AIN` (U1 pin 27).
 Testpoints: TP1 = `AIN`, TP2 = `VREF`, TP3 = `CLAMPIN`, TP4 = `adc_clk`.
+
+100 pF is C13's design value and stays so in the next revision (`docs/pcb-respin.md` §3.1).  The
+bench board was refitted with 680 pF around 2026-09-25 (*The M5's blanking levels depend on its
+boot*) and nothing here records it going back: from the 57.5 ohm source that costs about 2.5 dB
+at 3.58 MHz, against 0.1 dB.
 
 ### Expansion header J2 / Grove J4, J5
 
@@ -2610,16 +2701,19 @@ at every setting (4914 / 3920 / 2728 / 882 wrong channels at 0x10 / 0x50 /
 
 ## Toolchain
 
-Open-source flow, same as the sibling project `../tang` (a Tang Nano **9K** starter that already
-has working TMDS output). The suite is installed *per-project* under `.tools/oss-cad-suite` and is
-invoked through a `scripts/tool` wrapper that sources the suite's `environment` file, so the
-shell PATH is never modified. Copy `../tang/scripts/{tool,setup-macos.sh}` rather than reinventing.
+Open-source flow, all of it from the OSS CAD Suite, installed *per-project* under
+`.tools/oss-cad-suite`. Every tool is run through `scripts/tool`, which sources the suite's
+`environment` file when it is there and otherwise uses whatever is on `PATH` — so the shell's own
+PATH is never modified, and a suite installed some other way works too.
 
-- **Yosys** `synth_gowin` → JSON netlist
+- **Yosys** `synth_gowin` → JSON netlist (`-nodsp -noalu` for the decoder)
 - **nextpnr-himbaechel** → place & route (chipdb `GW2A-18C` is present in the installed suite)
-- **Apicula** `gowin_pack` → `.fs` bitstream
+- **Apicula** `gowin_pack`, always by way of `scripts/gowin_pack_io.py` → `.fs` bitstream
 - **openFPGALoader** `-b tangnano20k` → SRAM (volatile) or `-f` → flash
 - **Icarus Verilog** (`iverilog`/`vvp`) for simulation; waveforms to `build/*.vcd`
+- **Python 3**, standard library only for everything `make test` runs. Outside that,
+  `calib_uvfit.py` needs Pillow, `filter_check.py` NumPy and `usb_reset.py` pyusb. **FFmpeg**
+  reads the HDMI output back from the capture card.
 
 Device strings for the Tang Nano 20K (differ from the 9K project — update both):
 
@@ -2629,23 +2723,56 @@ FAMILY := GW2A-18C
 BOARD  := tangnano20k
 ```
 
-`.tools` is a symlink to `../tang/.tools` so the 1.8 GB suite is not downloaded twice;
-`scripts/setup-macos.sh` still works standalone if that sibling ever goes away.
+On the development Mac `.tools` is a symlink to `../tang/.tools` so the 1.8 GB suite is not
+downloaded twice; `scripts/setup-macos.sh` still works standalone. `../tang` is a sibling
+checkout there (a Tang Nano **9K** starter with working TMDS output, where this flow and
+`scripts/{tool,setup-macos.sh}` came from). It is not part of this repository — do not assume it
+exists, and on another machine a `../tang` may be something else entirely.
+
+Development was done on macOS and parts of the tooling assume it: `scripts/setup-macos.sh`
+refuses any other OS, `monitor.py` and `read_raw.py` use `termios`, `tang_port.py` uses `ioreg`,
+and `live_capture.py` / `adc_diag.py` capture through FFmpeg's `avfoundation`. The Makefile itself
+wants only GNU make, bash and the usual `sed`/`grep`/`cmp`/`gunzip`. On Windows under Git Bash,
+`make test-quality` passes as it stands (checked 2026-10-03); building and simulating there
+needs the suite's tools on `PATH`, which has not been tried.
 
 ### Commands
 
+`make`, `make build`, `make program` and `make flash` are the **probe**. The decoder's targets
+all begin `ntsc`.
+
 ```sh
-./scripts/setup-macos.sh   # one-time: install OSS CAD Suite into .tools/
+./scripts/setup-macos.sh   # one-time, macOS only: install OSS CAD Suite into .tools/
 make check-tools
+
+# The decoder -- the product (top_ntsc_hdmi, 25.2 MSPS, 640x480p)
+make ntsc                  # -> build/top_ntsc_hdmi.fs
+make ntsc-program          # load to SRAM (fast loop, lost at power-off)
+make ntsc-run              # build, load to SRAM, print the last serial reports
+make ntsc-flash            # write to onboard flash (persistent; starts at the next power cycle)
+make -B ntsc NTSC_SEED=5   # another placement seed (default 3); without -B the old PNR is kept
+
+# Tests -- no board needed
+make test                  # every bench, the Python tests and check-signed; a few minutes
+make sim-video             # one bench; the Makefile's `test:` line lists them all
+make test-quality          # the Python tests of scripts/ alone; needs no OSS CAD Suite
+make check-signed          # fails on a signed comparison in the decoder (Apicula #541)
+
+# The ADC probe -- board bring-up (adc_probe_top, 27 MSPS, report over the UART)
 make sim                   # positive: synthetic NTSC in, must measure ln=1716
 make sim-badphase          # negative: a bad sampling phase must NOT measure 1716
 make build                 # -> build/adc_probe_top.fs
 make program               # load to SRAM (fast loop, lost at power-off)
 make flash                 # write to onboard flash (persistent)
 make monitor               # read the report (see the serial gotcha below)
+
 make clean
 make restore-flash         # write back the known-good 2026-09-26 NTSC bitstream
 ```
+
+Always read the **final routed** timing in nextpnr's output before loading a build. The decoder
+is constrained per clock by `constraints/tangnano20k_ntsc.sdc` (27, 126 and 25.2 MHz), and
+`.DELETE_ON_ERROR` keeps a failed route from being packed by the next `make`.
 
 `bitstreams/ntsc_good_2026-09-26.fs.gz` is that bitstream itself (tag
 `good-2026-09-26`, sha256 of the `.fs` `07ca2c89...acc`), kept so the known-good
@@ -2653,25 +2780,44 @@ state survives source and toolchain changes; `make restore-program` loads it to
 SRAM only.  It is the only bitstream in version control -- add another only
 when the user asks for a restore point.
 
-Diagnostic variants — same RTL, only a constraint or a parameter differs:
+Diagnostic variants — same RTL, only a constraint or a parameter differs (`chparam` in the
+Yosys script). Each builds to its own file name, and each `X-program` has an `X` that only builds:
 
 ```sh
-make pullup-program        # weak pull-ups on the ADC inputs
-make clampon-program       # CLAMP held on: AIN forced to CLAMPIN, needs no video source
-make clampoff-program      # CLAMP held off, for comparison
+make ntsc-legacy-program   # LEGACY_TIMING=1: window positions for a source with no sync step
+make ntsc-scope-program    # starts in the full-range waveform view; takes
+                           #   NTSC_SCOPE_PHASE=n NTSC_SCOPE_RAMP=n NTSC_SCOPE_FREERUN=1
+make ntsc-tape-program     # records 32768 raw samples once, shows them as grey cells
+make ntsc-adcdiag-program  # steps the converter clock's rotation; per-bit counts in the strip
+make hdmitest-program      # HDMI test pattern, no ADC: 720x480p (hdmi720: 720p60, hdmi640: 640x480)
+make pullup-program        # probe: weak pull-ups on the ADC inputs (pulldown-program likewise)
+make clampon-program       # probe: CLAMP held on, AIN forced to CLAMPIN, needs no video source
+make clampoff-program      # probe: CLAMP held off, for comparison
+make clkhigh-program       # probe: adc_clk held high (clklow: low; clkslow ~1 Hz; clkmid ~1.7 MHz)
+make dumpbig-program       # probe: 32768 samples dumped as hex over the UART (autodump: 2048)
 ```
 
 Run a single testbench directly instead of adding a target for it:
 
 ```sh
-./scripts/tool iverilog -g2012 -s <tb> -o build/<tb> <rtl...> sim/<tb>.v && ./scripts/tool vvp build/<tb>
+./scripts/tool iverilog -g2012 -s <tb> -P<tb>.<PARAM>=<value> -o build/<tb> <rtl...> sim/<tb>.v \
+    && ./scripts/tool vvp build/<tb>
+make sim-capture SIMARGS="-Pntsc_capture_tb.Q_QUALIFY=110"   # also sim-capture-weak, sim-burst
 ```
 
+`CAPTURE_SIM_RTL` in the Makefile is the file list for a bench built on `ntsc_capture`, and
+`NTSC_RTL` plus `sim/gowin_prim_sim.v` (behavioural `rPLL`, `CLKDIV`, `IDDR`, `ODDR`, ...) the one
+for a bench of the whole decoder. `-P` reaches only the top-level bench's own parameters; the
+bench passes them down, and the module underneath takes by name only what is in its parameter
+*port list*. A bench that shares its source with another target writes its own binary, so the
+targets can run side by side.
+
 Each top-level design gets its own `{RTL, CST, netlist, pnr, bitstream}` variable group and its own
-`<name>`/`<name>-program`/`<name>-flash` targets — that is how `../tang` keeps the LED, HDMI, and
-ADV7180 designs buildable side by side. Follow the same pattern so the ADC bring-up bitstream stays
-buildable after the decoder lands. The pull-up and clamp variants deliberately *derive* from the
-one authoritative `.cst` / RTL rather than copying it, so pin numbers have a single source.
+`<name>`/`<name>-program`/`<name>-flash` targets, which is what keeps the probe, the HDMI test and
+the decoder buildable side by side. Variants *derive* from the one authoritative `.cst` / RTL
+rather than copying it, so pin numbers have a single source: the decoder's constraints are
+concatenated at build time from the probe's `.cst`, the `tmds_` lines of the HDMI one and
+`tangnano20k_i2c.cst`, and the pull variants are a `sed` over the probe's.
 
 ### Serial output — the macOS trap
 
@@ -2715,49 +2861,102 @@ and TP4 low therefore isolates the fault to R13, the trace, the socket, or the A
 
 ## Architecture
 
-Built today (step 1):
+Three top-level designs, each with its own Makefile group. They share the pin constraints and a
+few leaf modules (`uart_tx`, `sync_lpf`, `video_timing`, the HDMI output chain) and nothing else.
+
+**`adc_probe_top`** (`make build`) — board bring-up at 27 MSPS, everything reported over the UART:
 
 ```
-clk27 (pin 4) → rPLL → clk108
+clk27 (pin 4) → rpll_108 → clk108
                   ├── /4 → adc_clk (pin 73)      27 MHz to the AD9280
-                  ├── 4-phase capture of adc_d   phase selectable at runtime
+                  ├── 4-phase capture of adc_d   phase stepped at runtime from S2
                   ├── sync slicer → line period / vsync / level stats
-                  ├── clamp gating (sync-tip window, free-runs before lock)
-                  ├── 2048-sample line buffer (BSRAM) for the raw hex dump
-                  └── report formatter → uart_tx (pin 69)
+                  ├── clamp gating (CLAMP_MODE; 2 = off is the default)
+                  ├── 2048-sample line buffer (BSRAM) for the raw hex dump (S1)
+                  └── report formatter (report_rom) → uart_tx (pin 69)
 ```
 
-Planned, downstream of the same capture block:
+**`top_hdmi_test`** (`make hdmitest`) — the HDMI output chain alone, with a test pattern, for
+telling a board, cable or sink fault from one of ours.
+
+**`top_ntsc_hdmi`** (`make ntsc`) — the decoder. One rPLL; 126 MHz reaches only the serialisers
+and the converter's clock, and everything else runs on the pixel clock at one ADC sample per
+clock, so the pixel clock *is* the sample clock and no video data crosses a clock domain:
 
 ```
-AD9280 → adc_capture → sync_detector ─┬─ hsync / vsync / field
-                                      └─ burst_gate
-            ↓
-       ntsc_decoder   (black-level restore, Y/C separation,
-                       burst-locked NCO, U/V demod, YUV→RGB)
-            ↓
-       deinterlacer   (bob: 480i → 480p, line buffers only, no frame buffer)
-            ↓
-       video_timing → tmds_encoder ×3 → OSER10 ×4 → HDMI
+clk27 → rpll_126 → serial_clk 126 MHz ─┬─ OSER10 ×4                         (hdmi_out)
+                                       ├─ ODDR → adc_clk, 1111100000 rotated (adc_front)
+                                       └─ CLKDIV /5 → pixel_clk 25.2 MHz → all the rest
+
+ntsc_capture                       samples in, finished RGB lines out
+  adc_front        IDDR per bit: rising edge = the sample, falling = a witness.  Counts where the
+                   two disagree and rotates adc_clk (3.97 ns steps) to the quiet point
+  sync_lpf         chroma-rejecting low-pass in front of the slicer
+  slicer, flywheel pulse-width-qualified H and V sync, learned line period, forced lines when
+                   locked, FREE_RUN line starts when not
+  black level      from the porches: DC restoration is digital, the analog clamp is unused
+  burst_nco        NCO at 2^32 × 3.579545 / 25.2; correlates the burst, and cordic_atan turns
+                   that into the burst angle of every line
+  Y/C, demod, RGB  7-tap boxcars, quadrature demodulation against chroma_sincos, YUV→RGB;
+                   no DSP blocks (`-nodsp`), the gains are constants
+  fx[55:0]         seven glitch effects, a byte each, every one breaking a stage above
+        │  wr_en / wr_addr / wr_data (RGB888), line_done, vsync_pulse, field_clks
+        ▼
+video_line_store   four banks (writer, published, reader, spare).  Every line is read twice:
+                   that is the bob, 480i or 240p → 480p, with no frame buffer
+video_zoom_store   88-line ring of the middle 427 pixels as RGB666; the 1.5× view (S2)
+video_timing       801 × 525 or 524 (240p), trimmed one line a frame towards V_TARGET
+top_ntsc_hdmi      picks plain or zoomed, draws the diagnostic view (S1) over it: scope trace,
+                   bars with target ticks, the ADC strip, the 8Angle's knobs.  TAPE mode
+hdmi_out           tmds_link_fx (knob 8) → tmds_encoder ×3 → OSER10 → TLVDS_OBUF
+
+angle8             I²C master polling the Unit 8Angle → fx[63:0], enabled by its switch
+ntsc_status        the once-a-second serial report → uart_tx
 ```
+
+`ntsc_capture.v` is a quarter of the decoder's RTL and holds the whole decode in one module; its
+parameters (the window positions, `QUALIFY`, `THR_SHIFT`, `RELEASE`, ...) are where the benches
+reach in. `burst_nco` and `cordic_atan` have benches of their own because a recording does not
+come with the right answer for phase.
+
+The test benches are of three kinds:
+
+- **Synthetic, with a known answer** — `ntsc_video_tb` (75% bars checked against published RGB;
+  its parameters give the weak, mono, late and glitch variants), `burst_*_tb`, `cordic_atan_tb`,
+  `adc_front_tb`, `tmds_*_tb`, `video_*_store_tb`, `angle8_tb`.
+- **Recorded from the board** — `ntsc_capture_tb` and `replay_tb` feed `sim/*.hex` through
+  `ntsc_capture`; `scripts/replay_quality.py` scores the result on the same scale as a capture
+  of the real output, and `scripts/tape_reference.py` gives a floating-point decode to compare.
+- **Negative controls** — many targets also run a configuration that must be seen to fail
+  (`sim-badphase`, the short ring in `sim-zoom`, `FREE_RUN=0`, the 8Angle at 0x44, a fixed
+  rotation inside the switching window). Keep that when adding one.
+
+On the board the loop is: build, load to SRAM, read the HDMI output back through a capture card
+(`scripts/live_capture.sh`), score it with a script. The UART is not part of it.
 
 ### Clocking decisions
 
 - The PLL primitive is **rPLL**, not PLLVR, with `defparam DEVICE = "GW2AR-18C"` — confirmed
-  against Sipeed's own `TangNano-20K-example/hdmi/src/gowin_rpll/TMDS_rPLL.v`. See `src/rpll_108.v`.
-  rPLL maths: `CLKOUT = FCLKIN * (FBDIV_SEL+1) / (IDIV_SEL+1)`, `VCO = CLKOUT * ODIV_SEL`, and the
-  VCO must stay in 400–1200 MHz.
-- Sample at **27 MHz**, not at 4×/8×fSC. This keeps ADC clock generation
-  and NTSC decoding as two independent problems; the 3.579545 MHz subcarrier is tracked by an NCO
-  locked to the colour burst. AD9280 is rated to 32 MSPS, so 27 MHz is in spec.
-- The ADC round-trip (FPGA → 33 Ω → ADC → pipeline → 20 Ω → FPGA) means `adc_d` is *not* aligned to
-  the launch edge. `adc_probe_top` handles this by running at 108 MHz and capturing the bus on all
-  four phases of each ADC period (0 / 9.3 / 18.5 / 27.8 ns after the `adc_clk` edge), with the tap
-  selectable at runtime from button S2. Phase 2 is the default. Keep this mechanism when the
-  decoder replaces the probe — it is the cheapest way to walk the data eye without a scope.
-- Output side: 27 MHz × 5 = 135 MHz serial clock, `CLKDIV DIV_MODE="5"` back down to a 27 MHz pixel
-  clock, giving CTA-861 VIC 2 (720×480p60). `../tang/hdmi/top_hdmi.v` implements exactly this and
-  its `tmds_encoder.v` is directly reusable.
+  against Sipeed's own `TangNano-20K-example/hdmi/src/gowin_rpll/TMDS_rPLL.v`. See
+  `src/rpll_108.v` (probe) and `src/rpll_126.v` (decoder); the HDMI test generates one of
+  `rpll_135`, `rpll_371` and `rpll_126` by `MODE`. rPLL maths:
+  `CLKOUT = FCLKIN * (FBDIV_SEL+1) / (IDIV_SEL+1)`, `VCO = CLKOUT * ODIV_SEL`, and the VCO must
+  stay in 400–1200 MHz. **One rPLL per design** — Apicula cannot pack two.
+- The decoder samples at **25.2 MHz**, the pixel clock itself, and the probe at 27 MHz; neither
+  is 4×/8×fSC. This keeps ADC clock generation and NTSC decoding as two independent problems; the
+  3.579545 MHz subcarrier is tracked by an NCO locked to the colour burst. AD9280 is rated to
+  32 MSPS, so both are in spec. A line is 1601.6 samples at 25.2 MHz and 1716 at 27.
+- The ADC round-trip (FPGA → 33 Ω → ADC → pipeline → 20 Ω → FPGA) means `adc_d` is *not* aligned
+  to the launch edge, and where it lands moves with placement. The probe runs at 108 MHz and
+  captures the bus on all four phases of each ADC period (0 / 9.3 / 18.5 / 27.8 ns after the
+  `adc_clk` edge), the tap stepped from button S2, phase 2 the default. The decoder instead keeps
+  its reads fixed in the pins' IO logic and moves the converter's clock, by measurement
+  (`adc_front`; *The decoder on the pixel clock*). `CAL_MASK` counts bits 2, 3, 6 and 7 only.
+- Output side: 126 MHz serial clock, `CLKDIV DIV_MODE="5"` down to the 25.2 MHz pixel clock,
+  640×480p with `H_TOTAL` 801 (59.925 Hz, close to NTSC's 59.94) and a frame of 525 lines, or
+  524 for a 240p source. 126 is 27 × 14 / 3; 25.2 MHz is 0.1% above VGA's nominal 25.175.
+- nextpnr gets `--freq 27` and, for the decoder, one `create_clock` per clock in
+  `constraints/tangnano20k_ntsc.sdc`; `--freq` alone demands one figure of every clock.
 
 ### 9K → 20K porting notes
 
@@ -2793,6 +2992,8 @@ the constraints do not:
 
 ### Reusable prior art in `../tang`
 
+(On the development Mac only; see *Toolchain*.)
+
 - `hdmi/tmds_encoder.v` — 8b/10b TMDS encoder, device-independent.
 - `hdmi/top_hdmi.v` — PLL + CLKDIV + 720×480p60 timing + OSER10/ELVDS output chain.
 - `hdmi/top_adv7180.v`, `hdmi/adv_line_buffer.v` — an existing **480i → bob → 480p** path with
@@ -2807,11 +3008,18 @@ the constraints do not:
   it, and without it a reset released by PLL `LOCK` can start at X in simulation and never assert,
   leaving every subsequent register X. This is a silent, whole-design failure that looks like a
   clocking bug.
-- `expect` is a SystemVerilog keyword; do not name a testbench task that.
+- `expect` and `dist` are SystemVerilog keywords and `small` a Verilog one; Yosys takes them as
+  identifiers and Icarus (`-g2012`) reports a bare syntax error. Do not name anything that.
+- No signed comparison in the decoder (`$signed(a) > $signed(b)`, or two operands merely
+  *declared* signed): compare magnitudes unsigned and test the sign bit. `make check-signed`
+  enforces it by elaborating the design, because a grep cannot see it.
+- Evaluate an arithmetic shift into a signed wire *first*, then add: `u + (s >>> K)` with an
+  unsigned `u` is evaluated unsigned and the shift turns logical. It has bitten three times.
 - Every measurement testbench should have a negative control. `make sim` asserting "we measured
   1716" is only worth something because `make sim-badphase` asserts that a broken setup does not.
-- Comments in English.  `README.md` is English and `README.ja.md` Japanese -- change both
-  together; `docs/` is Japanese.
+- **Converse with the user in Japanese.**  Code comments, commit messages and this file stay in
+  English.  `README.md` is English and `README.ja.md` Japanese -- change both together; `docs/`
+  is Japanese.
 - `build/`, `.tools/`, `*.vcd`, `.DS_Store` are generated — keep them out of version control.
 - Onboard LEDs are **active-low** and are a legitimate first debug output: `../tang` uses LED0/1/2
   as reset-released / PLL-locked / valid-line-detected indicators. Do the same for ADC bring-up.
