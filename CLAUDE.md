@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Composite **NTSC → AD9280 (8-bit ADC) → Tang Nano 20K → HDMI (DVI-compatible TMDS)**.
+**CVBS2HDMI** (renamed from TangADC on 2026-10-03; the carrier board keeps the name `tangADC`):
+composite **NTSC → AD9280 (8-bit ADC) → Tang Nano 20K → HDMI (DVI-compatible TMDS)**.
 Released as **v0.1** (tag `v0.1`, 2026-10-03) under the MIT License; `README.md` (English) and
 `README.ja.md` (Japanese) are the user-facing description, and `docs/pcb-respin.md` the board's
 revision notes.

@@ -1,10 +1,10 @@
-# TangADC — composite NTSC to HDMI (Tang Nano 20K + AD9280)
+# CVBS2HDMI — composite NTSC to HDMI on a Tang Nano 20K
 
 English | [日本語](README.ja.md)
 
 **v0.1**
 
-TangADC digitises composite NTSC video with an 8-bit ADC (AD9280), decodes it in colour on the
+CVBS2HDMI digitises composite NTSC video (CVBS) with an 8-bit ADC (AD9280), decodes it in colour on the
 Tang Nano 20K's FPGA, and sends it to the on-board HDMI connector as 640×480p. There is no frame
 buffer. Everything is built with an open-source toolchain (Yosys / nextpnr-himbaechel / Apicula /
 openFPGALoader / Icarus Verilog); development was done on macOS.
@@ -27,8 +27,8 @@ Not supported: PAL, audio, black-level correction for 7.5 IRE setup.
 ## Hardware
 
 - **Tang Nano 20K** (GW2AR-LV18QN88C8/I7)
-- **Carrier board**: an AD9280ARS and its input circuit, taking the Tang Nano 20K in a DIP-40
-  socket
+- **Carrier board** (`tangADC`): an AD9280ARS and its input circuit, taking the Tang Nano 20K in
+  a DIP-40 socket
   - Input: RCA → 75 Ω termination → ESD protection → 1 µF AC coupling → 20 Ω + 100 pF → AIN
   - AD9280: internal 2 V reference, single-ended input (0..2 V), clocked at 25.2 MHz by the FPGA
   - DC restoration is digital (black level measured on the front porch); the analog clamp is

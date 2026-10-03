@@ -1,5 +1,5 @@
 // SMPTE-style colour bars out of an M5Stack ATOM (ESP32-PICO-D4) as NTSC
-// composite, for calibrating the TangADC decoder.
+// composite, for calibrating the CVBS2HDMI decoder.
 //
 // Why this exists: a decoder cannot be validated against a picture whose
 // correct answer is unknown.  These bars have exact, published YUV values, so
@@ -73,7 +73,7 @@ public:
             // Panel_CVBS emits sync at DAC code 0 and everything else relative
             // to it: blanking at 286 mV, white at 960 mV, so 29.8% of the
             // signal is sync, exactly as NTSC asks.  The ESP32's DAC does not
-            // deliver that.  Measured through the TangADC front end, a DAC
+            // deliver that.  Measured through the CVBS2HDMI front end, a DAC
             // code near the bottom is worth 0.65 ADC codes while one in the
             // middle is worth 1.75 -- the bottom of the DAC's range is
             // compressed about 2.7:1 -- so the sync pulse arrives at 17 ADC

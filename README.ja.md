@@ -1,10 +1,10 @@
-# TangADC — コンポジットNTSC → HDMI（Tang Nano 20K + AD9280）
+# CVBS2HDMI — コンポジットNTSC → HDMI（Tang Nano 20K）
 
 [English](README.md) | 日本語
 
 **v0.1**
 
-コンポジットNTSC映像を8ビットADC（AD9280）で取り込み、Tang Nano 20KのFPGAでカラー復号して、
+コンポジットNTSC映像（CVBS）を8ビットADC（AD9280）で取り込み、Tang Nano 20KのFPGAでカラー復号して、
 オンボードのHDMI端子へ640×480pで出力します。フレームバッファは使いません。
 ビルドはオープンソースのツールチェーン（Yosys / nextpnr-himbaechel / Apicula /
 openFPGALoader / Icarus Verilog）だけで行います。開発はmacOS上です。
@@ -25,7 +25,7 @@ PAL、音声、7.5 IREセットアップの黒レベル補正には対応して�
 ## ハードウェア
 
 - **Tang Nano 20K**（GW2AR-LV18QN88C8/I7）
-- **キャリア基板**：AD9280ARSと入力回路を載せ、Tang Nano 20KをDIP-40ソケットで受ける
+- **キャリア基板**（`tangADC`）：AD9280ARSと入力回路を載せ、Tang Nano 20KをDIP-40ソケットで受ける
   - 入力：RCA → 75 Ω終端 → ESD保護 → 1 µF AC結合 → 20 Ω + 100 pF → AIN
   - AD9280：内部2 V基準、シングルエンド入力（0〜2 V）、クロックはFPGAから25.2 MHz
   - 直流再生はデジタル（フロントポーチから黒レベルを測定）。アナログクランプは使わない

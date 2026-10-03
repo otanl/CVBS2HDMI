@@ -1,7 +1,7 @@
 # m5-colorbars — NTSC colour bar generator for decoder calibration
 
 Turns an M5Stack ATOM (ESP32-PICO-D4) with the RCA unit into a composite
-colour bar source, so the TangADC decoder can be checked against known values
+colour bar source, so the CVBS2HDMI decoder can be checked against known values
 instead of by eye.
 
 Output is on **G26** (DAC channel 2), which is where the M5Stack RCA unit sits.
