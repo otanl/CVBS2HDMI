@@ -11742,7 +11742,7 @@
 				)
 			)
 		)
-		(property "Value" "PESD5V0U1BA"
+		(property "Value" "H5VL10B"
 			(at 62.992 63.754 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11752,7 +11752,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-323"
+		(property "Footprint" "Diode_SMD:D_SOD-882"
 			(at 62.23 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -13930,5 +13930,4 @@
 			(page "1")
 		)
 	)
-	(embedded_fonts no)
 )

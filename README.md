@@ -38,9 +38,9 @@ Not supported: PAL, audio, black-level correction for 7.5 IRE setup.
 - **Optional**: M5Stack Unit 8Angle (Grove J4/J5, I²C)
 
 The carrier board's KiCad 10 project is in `hardware/`: schematic, PCB, and the JLCPCB
-production files (BOM, placement, gerbers) of the board as built and measured (v0.1). The
-schematic and PCB have since taken the fixes for the next revision, which has not been
-manufactured; the design as built is tag `v0.1`. `docs/pcb-respin.md` §4.6 lists the changes.
+production files (BOM, placement, gerbers). They are at v0.2, the next revision, which has not
+been manufactured; the board as built and measured is tag `v0.1`. `docs/pcb-respin.md` §4.6 and
+§4.7 list the changes. Every part JLCPCB places is from its Basic or Preferred library.
 
 Pin assignment (the single source is `constraints/tangnano20k_adc_probe.cst`):
 
