@@ -2453,10 +2453,12 @@ error, so v0.1 stands):
   off: it would pin the sync tip at mid-scale.
 - **C13 is an 0603** in the place of the leaded disc, which sat inside U2's courtyard.  The disc's
   holes were also the layer changes for AIN (to TP1 on B.Cu) and for GND; two vias replace them.
-- **GND vias beside U1's ground pins** 1, 14 and 16..18.  Those pins were never on thermal spokes
-  alone -- each has a 0.4..1 mm track -- so the DRC's six `starved_thermal` errors describe the
-  pour, not the connection, and vias do not clear them: that takes the F.Cu zone's pad
-  connection set to "thermal reliefs for PTH" in the GUI.
+- **GND vias beside U1's ground pins** 1, 14 and 16..18, and **both GND zones set to "thermal
+  reliefs for PTH"**, so every surface-mount ground pad joins the pour solidly.  Those pins were
+  never on thermal spokes alone -- each has a 0.4..1 mm track -- so the DRC's six
+  `starved_thermal` errors described the pour, not the connection; the zone setting cleared
+  five, and the one left is J2 pin 2, a through-hole that reaches the B.Cu pour anyway.  The
+  cost is heat: U1 is hand-soldered, and its ground pins now sink more of it.
 - **The top-edge GND track** is 0.5 mm wide at y = 27.0, 0.69 mm from the edge (it was 0.22
   against a 0.5 rule).
 - **FB1 and FB2 are 0805 chip beads** (Sunlord GZ2012D601TF, LCSC C1017, a JLCPCB *Basic* part:
