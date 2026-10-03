@@ -5,6 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 Composite **NTSC → AD9280 (8-bit ADC) → Tang Nano 20K → HDMI (DVI-compatible TMDS)**.
+Released as **v0.1** (tag `v0.1`, 2026-10-03) under the MIT License; `README.md` (English) and
+`README.ja.md` (Japanese) are the user-facing description, and `docs/pcb-respin.md` the board's
+revision notes.
 
 Everything below marked *Verified* was read out of the hardware design or measured on the bench;
 *Planned* means agreed but not yet built. Keep the distinction when editing.
@@ -2800,7 +2803,8 @@ the constraints do not:
 - `expect` is a SystemVerilog keyword; do not name a testbench task that.
 - Every measurement testbench should have a negative control. `make sim` asserting "we measured
   1716" is only worth something because `make sim-badphase` asserts that a broken setup does not.
-- Comments in English; user-facing README/docs in Japanese (matching `../tang`).
+- Comments in English.  `README.md` is English and `README.ja.md` Japanese -- change both
+  together; `docs/` is Japanese.
 - `build/`, `.tools/`, `*.vcd`, `.DS_Store` are generated — keep them out of version control.
 - Onboard LEDs are **active-low** and are a legitimate first debug output: `../tang` uses LED0/1/2
   as reset-released / PLL-locked / valid-line-detected indicators. Do the same for ADC bring-up.

@@ -1,133 +1,211 @@
-# TangADC — コンポジットNTSC → HDMI (Tang Nano 20K + AD9280)
+# TangADC — composite NTSC to HDMI (Tang Nano 20K + AD9280)
 
-コンポジットNTSCをAD9280(8bit ADC)で取り込み、Tang Nano 20KでデコードしてオンボードHDMIへ
-出力するプロジェクトです。macOS上のオープンソース・ツールチェーン(Yosys / nextpnr-himbaechel /
-Apicula / openFPGALoader / Icarus Verilog)を使います。
+English | [日本語](README.ja.md)
 
-カラー復号と640×480pのHDMI出力を実装しています。デコーダは25.2 MSPS、
-後述のADC単体プローブは27 MSPSです。映像はラインバッファで倍化し、音声は出力しません。
+**v0.1**
 
-## NTSC → HDMIを使う
+TangADC digitises composite NTSC video with an 8-bit ADC (AD9280), decodes it in colour on the
+Tang Nano 20K's FPGA, and sends it to the on-board HDMI connector as 640×480p. There is no frame
+buffer. Everything is built with an open-source toolchain (Yosys / nextpnr-himbaechel / Apicula /
+openFPGALoader / Icarus Verilog); development was done on macOS.
+
+## Features
+
+- Colour NTSC decoding (240p and 480i) to 640×480p HDMI (DVI-compatible)
+- 25.2 MSPS, one sample per clock, with no multipliers or ALU cells; the colour burst's phase
+  is measured on every line with a CORDIC
+- 240p, as most game consoles send it, holds still: the output frame switches between 524 and
+  525 lines to match
+- A broken or missing input is shown as noise, never as a black screen
+- S2 zooms the picture 1.5 times and crops the border (a ring buffer of lines, no frame buffer)
+- Eight glitch effects on the knobs of an M5Stack Unit 8Angle, each breaking a stage of the
+  decoder itself
+- Regression tests in simulation for every feature (`make test`)
+
+Not supported: PAL, audio, black-level correction for 7.5 IRE setup.
+
+## Hardware
+
+- **Tang Nano 20K** (GW2AR-LV18QN88C8/I7)
+- **Carrier board**: an AD9280ARS and its input circuit, taking the Tang Nano 20K in a DIP-40
+  socket
+  - Input: RCA → 75 Ω termination → ESD protection → 1 µF AC coupling → 20 Ω + 100 pF → AIN
+  - AD9280: internal 2 V reference, single-ended input (0..2 V), clocked at 25.2 MHz by the FPGA
+  - DC restoration is digital (black level measured on the front porch); the analog clamp is
+    not used
+  - Powered from the Tang Nano 20K's 3.3 V, with separate analog and digital rails through
+    ferrite beads
+- **Optional**: M5Stack Unit 8Angle (Grove J4/J5, I²C)
+
+Pin assignment (the single source is `constraints/tangnano20k_adc_probe.cst`):
+
+| Signal | FPGA pin | | Signal | FPGA pin |
+|---|---|---|---|---|
+| `adc_clk` | 73 | | `adc_d[4]` | 29 |
+| `adc_clamp` | 74 | | `adc_d[5]` | 30 |
+| `adc_d[0]` | 27 | | `adc_d[6]` | 75 |
+| `adc_d[1]` | 28 | | `adc_d[7]` | 77 |
+| `adc_d[2]` | 72 | | `adc_otr` | 71 |
+| `adc_d[3]` | 76 | | I²C SCL / SDA | 48 / 49 |
+
+The data bus is not in physical pin order. The board's revision history, and the pins that must
+not be used, are in `docs/pcb-respin.md` (Japanese).
+
+**Caution**: pin 3 of the Grove connectors is 5 V. A device that pulls I²C up to 5 V puts 5 V
+on the FPGA's pins. The 8Angle pulls up to its own 3.3 V and is safe.
+
+**Caution**: ADC bits 0, 1, 4 and 5 (pins 27..30) share an I/O bank with HDMI. Stock Apicula
+packs those inputs as LVDS receivers, so every build must go through `scripts/gowin_pack_io.py`
+(the Makefile does).
+
+## Usage
+
+### Installing the tools (once)
 
 ```sh
-./scripts/setup-macos.sh   # 初回のみ
+./scripts/setup-macos.sh
 make check-tools
-make test                # 復号・同期・バッファ・TMDS・起動の回帰試験
-make ntsc                # 標準NTSC同期波形向け(既定)をビルド
-make ntsc-program        # Tang Nano 20KのSRAMへ書き込み
 ```
 
-同期段差を持たない入力（初期のM5など）には、別のビルドを使います。
+This installs the OSS CAD Suite into `.tools/oss-cad-suite`; your shell's PATH and macOS
+settings are left alone.
+
+### Building and loading
+
+```sh
+make ntsc                # build
+make ntsc-program        # load into SRAM (lost at power-off)
+make ntsc-flash          # write to flash (kept across power cycles)
+```
+
+`make program` loads not the HDMI decoder but the ADC probe used to bring up a board (see below).
+
+### Buttons and LEDs
+
+- **S1**: toggles the diagnostic view (waveform and bars). The black-and-white cells showing the
+  ADC interface's state appear only at the bottom of this view.
+- **S2**: toggles the 1.5× zoom, which scales up the middle of the picture and crops the border
+  (for sources such as game consoles whose picture sits small inside a wide border). Both axes
+  scale alike, so the aspect ratio is kept. After a switch the picture slides into place over
+  about 1.5 seconds.
+- **LEDs** (active low): 0 heartbeat, 1 PLL locked, 2 horizontal sync locked, 3 vertical sync
+  seen, 4 and 5 the luma gain step
+
+An input that cannot be synced (a broken signal, a wrong standard, an unplugged cable) does not
+black out the screen: the signal is shown as it arrives, as noise, and a good signal is locked
+again as soon as it returns. 240p (262 lines every field, 60.05 Hz), as most game consoles send
+it, is shown by measuring the field length and switching the output frame between 525 and 524
+lines.
+
+### M5Stack Unit 8Angle (glitch effects)
+
+Connect an M5Stack Unit 8Angle to Grove J4 or J5 and its eight knobs and switch are read
+continuously over I²C (address 0x43, 100 kHz). Near the bottom of the S1 diagnostic view, each
+knob is drawn as a cyan bar, the switch as a green block, and a red block shows while the unit
+is not answering. `make sim-angle8` checks the reader against a model of the unit.
+
+The eight knobs control **glitch effects**. They do not post-process the image; each one breaks
+a stage of the decoder itself. A knob turned fully left is off, and with all knobs left the
+picture is the clean one. The effects are enabled with the switch in the green position (as the
+diagnostic view shows it).
+
+Knobs 1..4 break **where lines go and their shape**, 5..8 break **colour**; each group is in the
+order the signal passes through the decoder.
+
+| Knob | What breaks |
+|---|---|
+| 1 | Sync slicing: dark parts of the picture read as sync, so the picture decides where lines start |
+| 2 | Horizontal hold: real syncs are ignored and the line timing free-runs off frequency (sideways drift, diagonal tearing) |
+| 3 | Line stretch: lines at random are stretched to twice the width or squeezed to half, leaving an older line behind |
+| 4 | Line buffer: lines stop being updated, and old lines smear downwards |
+| 5 | ADC bus faults: the faults this board really had, in order (pair misreads → stuck bits → crossed wiring) |
+| 6 | Colour reference collapse: the burst is measured inside the picture and the oscillator drifts, so the hue jumps and rainbow stripes roll |
+| 7 | Colour matrix overflow: the YUV→RGB gain is raised and the clipping removed, so bright and saturated parts fold into their complements (neon, solarised) |
+| 8 | HDMI link failure: first the lanes skew, splitting red, green and blue sideways with a per-line shiver; past half way, blocks of a few lines lose a colour lane or misread it (inverted and so on). Worked out in the FPGA as the monitor would show it, so the link never drops |
+
+`make sim-video-glitch` checks that each effect breaks the picture and that the picture is clean
+again once the effect is removed. `make sim-link` checks, line by line, that the HDMI link
+failure breaks the picture only in the ways it is allowed to.
+
+### Sources with no sync step
+
+A signal whose sync tip sits at blanking level (an early M5 setup, for example) needs a build
+with different window positions. It is not switched automatically.
 
 ```sh
 make ntsc-legacy
 make ntsc-legacy-program
 ```
 
-既定値は`LEGACY_TIMING=0`です。同期段差がある入力では、こちらが行落ち0.43%・
-カラー120/120フレームに対し、`LEGACY_TIMING=1`は行落ち47.8%・カラー0/120でした
-（2026-09-24、改版基板・同一シードでの比較）。
-`ntsc-legacy`は`LEGACY_TIMING=1`で生成し、ビットストリームも別名に保存します。
-窓位置が大きく異なるため、自動切替はしません。
-7.5 IREセットアップを持つ入力の黒レベル補正、PAL、音声には未対応です。
+On a source with a sync step, the default (`LEGACY_TIMING=0`) measured 0.43% dropped rows and
+colour on 120/120 frames, against 47.8% and 0/120 for `LEGACY_TIMING=1` (2026-09-24, same seed).
 
-S1で波形・診断表示を切り替えます（ADC読み取り状態の白黒セルは診断表示の下端にだけ出ます）。
-S2は拡大表示の切り替えです。画面中央を1.5倍に拡大し、周囲の余白を切り落とします
-（ゲーム機のように絵が枠の内側に小さく出る入力向け。左右と上下が同じ倍率なので、
-絵の縦横比は変わりません）。切り替え後、約1.5秒かけて画面が所定の位置へ滑ります。
-通常は診断表示を重ねずに復号映像を表示します。
+### Going back to a known-good version
 
-同期の取れない入力（壊れた信号、規格違い、ケーブル抜け）でも画面は黒くならず、
-入ってきた信号をそのまま（ノイズとして）表示し、正常な信号に戻れば従来どおり同期します。
-
-ゲーム機に多い240p（毎フィールド262ライン、60.05 Hz）も縦に流れずに表示します。
-フィールドの長さを測り、出力フレームを525ラインと524ラインで自動的に切り替えます。
-
-`make ntsc-program`はSRAMへの書き込みで、電源を切ると消えます。電源を入れ直しても
-同じ版で起動させるには、フラッシュへ書き込みます。
+The version verified on 2026-09-26 (tag `good-2026-09-26`) is kept as a bitstream,
+`bitstreams/ntsc_good_2026-09-26.fs.gz`, so it can be written back whatever happens to the
+sources or the toolchain.
 
 ```sh
-make ntsc-flash          # 今のソースからビルドしてフラッシュへ
+make restore-flash       # write it to flash (kept across power cycles)
+make restore-program     # load it into SRAM only (to try it)
+git checkout good-2026-09-26   # the sources as they were
 ```
 
-### M5Stack Unit 8Angle（つまみ8個）
-
-GroveコネクタJ4またはJ5にM5Stack Unit 8Angleをつなぐと、8つのつまみとスイッチを
-I²C（アドレス0x43、100 kHz）で読み続けます。S1の診断画面の下の方に、つまみ1本ずつの
-水色のバー、スイッチの緑の四角、ユニットが応答しないときの赤い四角を表示します。
-`make sim-angle8`で読み取り回路をユニットの模型に対して検証できます。
-
-8つのつまみは**グリッチ効果**のコントロールです。画像を後から加工するのではなく、
-デコーダー自身の処理を1段ずつ狂わせます。つまみを一番左にすればその効果は完全にオフで、
-全部左なら通常のきれいな映像です。スイッチを緑（診断画面での表示）側にすると効果が有効になります。
-
-つまみ1〜4は**ラインの位置・形**を、5〜8は**色**を壊します。どちらも信号が通る順
-（入力側→出力側）に並んでいます。
-
-| つまみ | 壊すもの |
-|---|---|
-| 1 | 水平同期の閾値：絵の暗い部分を同期と誤認し、絵柄に応じてラインの頭がずれる |
-| 2 | 水平ホールド：本物の同期を無視し、ずれた周期で自走する（横流れ・斜めの裂け） |
-| 3 | ラインの伸び縮み：ラインごとにランダムで横に2倍に伸びたり半分に縮んだりし、残りに古いラインが残る |
-| 4 | ラインバッファ：ラインの更新を止め、古いラインが縦に引きずられる |
-| 5 | ADCバスの故障：この基板で実際に起きた故障（ペア誤読→ビットの張り付き→配線の入れ違い）を順に再現 |
-| 6 | 色の基準崩壊：バーストを絵の中で測り、発振器もずれて、色相が飛び虹色の縞が流れる |
-| 7 | 色変換の桁あふれ：YUV→RGB変換のゲインを上げて頭打ちをやめ、鮮やかな色や明るい部分が補色に折り返す（ネオン・ソラリゼーション） |
-| 8 | HDMIリンクの故障：まずレーン間のずれで赤・緑・青が横に分かれ、ラインごとに震える。半分を過ぎると、数ラインの帯で1つの色のレーンが消えたり誤読されたり（反転など）する。モニター側の見え方をFPGA内で計算して送るので、信号は切れない |
-
-`make sim-video-glitch`で、各効果が映像を壊すことと、外せば元の映像に戻ることを検証します。
-HDMIリンクの故障は`make sim-link`で、ラインごとに許された壊れ方だけをしていることを検証します。
-
-### 動作確認済みの版に戻す
-
-2026-09-26に動作を確認した版（タグ`good-2026-09-26`）は、ビットストリームそのものを
-`bitstreams/ntsc_good_2026-09-26.fs.gz`に保存してあります。ソースやツールが変わっても、
-これをそのまま書き戻せます。
+## Tests
 
 ```sh
-make restore-flash       # フラッシュへ書き戻す（電源を入れ直しても残る）
-make restore-program     # SRAMへだけ書く（試すだけ）
-git checkout good-2026-09-26   # ソースをその時点に戻す場合
+make test                # everything (a few minutes)
+make sim-video           # NTSC-J 75% bars, three fields, vertical interval included
+make sim-zoom            # the 1.5× zoom (240p and interlaced, with a negative control)
+make sim-video-glitch    # each glitch effect breaks the picture, and removing it restores it
+make sim-link            # the HDMI link failure effect
+make sim-hdmi            # TMDS encoding, line buffer races, start-up and video timing
 ```
-`make program`はHDMIデコーダではなく、以下のADC単体プローブを書き込むコマンドです。
 
-### 検証と画質測定
+`make test` includes negative controls: each bench also has to recognise a deliberately broken
+setup as broken.
+
+## Development and diagnostics
+
+The decisions and measurements made during development are recorded in `CLAUDE.md`. When the
+hardware behaves unexpectedly, search there first.
+
+### Picture quality
 
 ```sh
-make sim-reference       # 全位相、±100 ppm、半波バースト、信号断
-make sim-tracking        # 24行のバースト欠落後、最初の行から色位相を検証
-make sim-video           # NTSC-J 75%バー、3フィールド、縦帰線込み
-make sim-video-weak      # 小振幅同期
-make sim-video-mono      # バーストなしの白黒入力
-make sim-video-late      # 遅れて届く水平同期からの復帰
-make sim-hdmi            # TMDS符号化、行バッファ競合、起動と映像タイミング
+make sim-reference       # every phase, ±100 ppm, half-wave burst, signal loss
+make sim-tracking        # colour phase from the first line after 24 lines without burst
+make sim-video-weak      # small sync amplitude
+make sim-video-mono      # monochrome input with no burst
+make sim-video-late      # recovery from a horizontal sync that arrives late
 ```
 
-HDMIのPNGキャプチャは、Python標準ライブラリとFFmpegで集計できます。
+PNG captures of the HDMI output can be scored with the Python standard library and FFmpeg:
 
 ```sh
 python3 scripts/video_quality.py 'build/cap*.png' --rows 20:350 --start 24 --bar-width 80
 ```
 
-行の輝度順、暗い先頭バー、色付き行、RGB飽和、行間の色変動を別々に出力します。
-下1/4のグレイ階段は対象から外し、比較時は同じ領域・入力パターンを使ってください。
-書き込み後の最初のキャプチャはリンクと垂直位置の再同期の影響を受けるため、
-必ず2回取得して2回目を評価します。比較元・比較先とも同じ手順を使います。
-信号なしフレームも集計に含めます。輝度順が正しくても色相や振幅が正しいとは限りません。
-実機ではカラー表示を確認していますが、行欠け・色むら・白側の飽和は引き続き評価が必要です。
+It reports, separately, rows in luma order, rows with a dark first bar, rows with colour, RGB
+saturation, and row-to-row colour variation. The grey staircase in the bottom quarter is left out;
+compare only captures of the same region and test pattern. The first capture after programming
+is affected by the link and the vertical position re-acquiring, so always capture twice and score
+the second, the same way for both sides of a comparison. Frames with no signal are counted too.
+Bars in luma order do not prove that hue or amplitude is right.
 
-UARTが使えない場合は、既存のHDMI波形表示からADC値を測定できます。
+With no UART, ADC values can be measured from the waveform view on HDMI:
 
 ```sh
-make ntsc-scope-program             # 位相2で起動時から全レンジ波形・診断を表示
-# 位相の比較: make ntsc-scope-program NTSC_SCOPE_PHASE=4
+make ntsc-scope-program             # starts in the full-range waveform and diagnostic view
+# compare a phase: make ntsc-scope-program NTSC_SCOPE_PHASE=4
 ./scripts/live_capture.sh build/scope_new 120 8 --scope-mode 0 --phase 2
 python3 scripts/scope_trace.py build/scope_new_012.png --trace-only --require-mode 0
-# 既知ランプで表示経路を確認: make ntsc-scope-program NTSC_SCOPE_RAMP=2
-make ntsc-program                   # 通常の映像表示へ戻す
+# check the display path with a known ramp: make ntsc-scope-program NTSC_SCOPE_RAMP=2
+make ntsc-program                   # back to the normal picture
 ```
 
-同期が見つからない状態も調べる場合は、同期を待たない生ADC取得を使います。
+To look at a signal that has no usable sync, capture raw ADC data without waiting for sync:
 
 ```sh
 make ntsc-scope-program NTSC_SCOPE_RAMP=3 NTSC_SCOPE_FREERUN=1
@@ -135,249 +213,245 @@ make ntsc-scope-program NTSC_SCOPE_RAMP=3 NTSC_SCOPE_FREERUN=1
 python3 scripts/scope_trace.py build/raw_free_new_012.png --trace-only --require-mode 3
 ```
 
-通常の同期待ち取得では、同期を検出できないとバッファが一度も更新されず、
-未取得のゼロを実測値と誤認する場合があります。`NTSC_SCOPE_FREERUN=1` は
-約66 msごとに同期とは独立して取得します。ビルド名も設定別に分けています。
-`make sim-scope-freerun` で、無同期入力でも全2048点を取得・再取得できることと、
-従来の同期待ちモードでは取得しないことを検証できます。
+The normal capture waits for sync, and when none is found its buffer is never written, so zeros
+that were never captured can be mistaken for measurements. `NTSC_SCOPE_FREERUN=1` captures every
+66 ms or so regardless of sync, and the build gets its own name. `make sim-scope-freerun` checks
+that all 2048 points are captured and re-captured with no sync, and that the sync-waiting mode
+does not capture.
 
-640×480、横3サンプル/画素の波形を対象に、赤・白のトレースの縦位置から値を復元します。
-診断用ビルドは全256コードが見える縦軸です。通常ビルドのS1表示を読む場合は
-`--legacy-scale`を指定します（こちらは約150以上が上部の診断表示に隠れます）。
-読み取りが曖昧な列は除外します。生サンプルの全点ダンプではなく、画面からの近似測定です。
-診断表示の200～207行にはモード・ADC位相・フレームカウンターを埋め込みます。
-`live_capture.sh`は必ず2回以上取得し、指定モード/位相とカウンター更新を確認します。
-毎回、先頭120フレームをウォームアップとして別扱いにし、その後の指定枚数を測定します。
-測定区間から異常フレームを選別して取り除くことはありません。
-各試行を別フォルダーに保持し、既存の出力画像は上書きしません（新しい接頭辞を使ってください）。
-通常映像では画素の変化だけを確認します。静止画と停止したキャプチャの区別や、
-書き込んだビットストリームの同一性は、診断用カウンターなしでは保証できません。
-振動部分の振幅測定は未検証です。`--trace-only`を使い、色のゲイン調整には流用しないでください。
+The waveform is drawn at 640×480 with three samples a pixel, and values are recovered from the
+height of the red and white trace. The diagnostic build's vertical axis shows all 256 codes; to
+read the S1 view of the normal build, pass `--legacy-scale` (there, codes above about 150 are
+hidden behind the bars at the top). Ambiguous columns are dropped. This is an approximate
+measurement from the screen, not a dump of every sample. Rows 200..207 of the diagnostic view
+carry the mode, the ADC phase and a frame counter. `live_capture.sh` always captures at least
+twice and checks the mode, the phase and that the counter advances; each time it sets aside the
+first 120 frames as warm-up and measures the requested number after them. It never filters out
+bad frames from the measured run. Each attempt is kept in its own folder and existing images are
+never overwritten (use a new prefix). On the normal picture only pixel changes are checked:
+without the diagnostic counter, a still picture cannot be told from a frozen capture, nor the
+loaded bitstream identified. Amplitudes of oscillating parts are not validated; use
+`--trace-only`, and do not use these readings to set colour gain.
 
-### 入力信号を全点記録してシミュレーションで再生する
+### Recording the input and replaying it in simulation
 
-波形表示は3サンプルに1点の近似ですが、こちらはADCの生サンプルを連続32768点（約20ライン）
-そのまま取り出します。UARTは使いません。
+The waveform view shows one sample in three; this records 32768 consecutive raw ADC samples
+(about 20 lines) exactly, without the UART.
 
 ```sh
-make ntsc-tape-program                                  # 1回記録して凍結、灰色のセルで表示
+make ntsc-tape-program                                  # record once, freeze, show as grey cells
 python3 scripts/live_capture.py build/tape 12 8
-python3 scripts/tape_decode.py build/tape.hex build/tape_0*.png   # 12フレームで多数決
-python3 scripts/tape_trim.py build/tape.hex sim/my_tape.hex 18    # 偶数ライン分に切り出す
+python3 scripts/tape_decode.py build/tape.hex build/tape_0*.png   # vote across 12 frames
+python3 scripts/tape_trim.py build/tape.hex sim/my_tape.hex 18    # cut to an even number of lines
 ./scripts/tool iverilog -g2012 -s replay_tb -o build/replay_tb \
-    src/ntsc_capture.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v src/chroma_sincos.v sim/gowin_prim_sim.v sim/replay_tb.v
-./scripts/tool vvp build/replay_tb +stim=sim/my_tape.hex +nsamp=<行数> +lines=400 +out=build/replay.txt
-python3 scripts/replay_quality.py build/replay.txt --png build/replay.png  # 実機と同じ尺度で評価
-python3 scripts/tape_reference.py sim/my_tape.hex                          # 浮動小数点の参照復号
+    src/ntsc_capture.v src/adc_front.v src/sync_lpf.v src/burst_nco.v src/cordic_atan.v \
+    src/chroma_sincos.v sim/gowin_prim_sim.v sim/replay_tb.v
+./scripts/tool vvp build/replay_tb +stim=sim/my_tape.hex +nsamp=<samples> +lines=400 +out=build/replay.txt
+python3 scripts/replay_quality.py build/replay.txt --png build/replay.png  # same scale as the board
+python3 scripts/tape_reference.py sim/my_tape.hex                          # floating-point reference decode
 ```
 
-`replay_quality.py --frames 'build/cap_*.png'` で実機のキャプチャも同じ尺度で評価できます。
-`make sim-tape` は記録表示とデコーダーを既知のメモリ内容で端から端まで検証します。
+`replay_quality.py --frames 'build/cap_*.png'` scores captures from the board on the same scale.
+`make sim-tape` checks the recording display and its decoder end to end against a known memory
+image.
 
-**M5の信号では、正しく復号してもバーは輝度順に並びません**（M5自体が黄<シアン、緑<マゼンタ、
-赤<青の順で出力しています）。M5で評価するときは `video_quality.py` の「correct rows」ではなく、
-`replay_quality.py` の色相誤差とライン間変動を `tape_reference.py` の値と比べてください。
+**With the M5 as the source, correctly decoded bars are not in luma order** (the M5 itself sends
+yellow < cyan, green < magenta, red < blue). To evaluate with the M5, compare `replay_quality.py`'s
+hue error and line-to-line variation with `tape_reference.py`'s values instead of
+`video_quality.py`'s "correct rows".
 
-## ADC単体プローブ（27 MSPS）
+## ADC probe (for bringing up a board, 27 MSPS)
 
-ステップ1の実測結果:
+A separate design for the first check on a new board: that the ADC's data is captured correctly.
+
+Measured in step 1:
 
 ```
 ADC ph=2 tog=FF min=96 max=255 thr=115 ln=1716 lmin=1715 lmax=1717 ok=15734 lns=15734 vs=60 otr=0 lk=1
 ```
 
-生波形(`make autodump-program` で取得、`sim/ntsc_line_capture.hex` に保存):
+A raw waveform (taken with `make autodump-program`, saved as `sim/ntsc_line_capture.hex`):
 
-| 測定項目 | 実測 | NTSC規格 | 誤差 |
+| Quantity | Measured | NTSC | Error |
 | --- | --- | --- | --- |
-| 同期チップ | コード98(±1) | — | — |
-| 同期幅 | 4.59 us | 4.70 us | -2.3% |
-| ブランキング | コード133.9 | — | — |
-| 同期→ブランキング | 282 mV | 286 mV | **-1.3%** |
-| バースト開始 | 同期エッジ後 5.19 us | 5.3 us | — |
-| バースト長 | 2.52 us / **9.02サイクル** | 2.51 us / 9サイクル | **+0.2%** |
-| ライン周期 | **1716** サンプル | 1716.05 | — |
+| Sync tip | code 98 (±1) | — | — |
+| Sync width | 4.59 us | 4.70 us | -2.3% |
+| Blanking | code 133.9 | — | — |
+| Sync to blanking | 282 mV | 286 mV | **-1.3%** |
+| Burst start | 5.19 us after the sync edge | 5.3 us | — |
+| Burst length | 2.52 us / **9.02 cycles** | 2.51 us / 9 cycles | **+0.2%** |
+| Line period | **1716** samples | 1716.05 | — |
 
-バーストがちょうど9サイクル数えられる = サンプルクロックとサブキャリアの時間関係が正しい、
-振幅も -1.3% = ゲインが正しい、ということです。
+Counting exactly nine burst cycles shows that the sample clock and the subcarrier are in the right
+time relation, and an amplitude error of -1.3% shows that the gain is right.
 
----
+### Simulating
 
-## 1. ツールを導入する
-
-```sh
-./scripts/setup-macos.sh
-make check-tools
-```
-
-`.tools/oss-cad-suite` へ導入するため、シェル全体のPATHやmacOSの設定は変更しません。
-
-## 2. シミュレーションする
-
-合成NTSC信号を振る舞いモデルのAD9280経由で流し込み、ライン周期を測ります。
+A synthetic NTSC signal goes through a behavioural model of the AD9280 and the line period is
+measured.
 
 ```sh
-make sim           # 正常系: ln=1716 を測れること
-make sim-badphase  # 異常系: 誤ったサンプリング位相が「壊れている」と報告されること
+make sim           # positive: must measure ln=1716
+make sim-badphase  # negative: a wrong sampling phase must be reported as broken
 ```
 
-異常系があるのは、`ln=1716` という表示が「何を入れても出る値」でないことを確かめるためです。
+The negative case exists to show that `ln=1716` is not a value that comes out whatever goes in.
 
-## 3. 基板へ書き込んで測る
+### Loading it and measuring
 
 ```sh
-make program   # SRAMへ書き込み(電源を切ると消える)
-make monitor   # レポートを読む
+make program   # load into SRAM (lost at power-off)
+make monitor   # read the report
 ```
 
-毎秒1行、115200 8N1で次のように出ます。
+One line a second at 115200 8N1:
 
 ```
 ADC ph=2 tog=FF min=79 max=205 thr=94 ln=1716 lmin=1716 lmax=1717 ok=15720 lns=15734 vs=60 otr=0
 ```
 
-| 項目     | 意味                                        | 正常な値       |
-| ------ | ----------------------------------------- | ---------- |
-| `ph`   | サンプリング位相。0..3 = adc_clk立ち上がりの0/9.3/18.5/27.8 ns後 | `2`        |
-| `tog`  | そのウィンドウ中に変化したビットのOR                       | `FF`       |
-| `min`  | 最小コード → クランプ後の同期チップレベル                    | 70〜90程度    |
-| `max`  | 最大コード → ピーク白                              | 190〜215程度  |
-| `thr`  | 実際に使った同期スライスしきい値                          | min+数十     |
-| `ln`   | 直近のライン周期(サンプル数)                           | **1716**   |
-| `lmin` / `lmax` | 受理したライン周期の範囲                     | 1716〜1717  |
-| `ok`   | 1700..1732に入ったライン数                        | `lns`とほぼ同じ |
-| `lns`  | 受理したライン数                                  | 約15734     |
-| `vs`   | 垂直同期の検出数                                  | 約60        |
-| `otr`  | AD9280がオーバーレンジを立てたサンプル数                   | `0`        |
+| Field | Meaning | Healthy value |
+| --- | --- | --- |
+| `ph` | sampling phase; 0..3 = 0 / 9.3 / 18.5 / 27.8 ns after the adc_clk rising edge | `2` |
+| `tog` | OR of the bits that changed during the window | `FF` |
+| `min` | lowest code → the sync tip level | about 70..90 |
+| `max` | highest code → peak white | about 190..215 |
+| `thr` | the sync slicing threshold actually used | min + a few tens |
+| `ln` | the latest line period (samples) | **1716** |
+| `lmin` / `lmax` | range of accepted line periods | 1716..1717 |
+| `ok` | lines whose period is within 1700..1732 | about `lns` |
+| `lns` | accepted lines | about 15734 |
+| `vs` | vertical syncs detected | about 60 |
+| `otr` | samples the AD9280 flagged as over range | `0` |
 
-**`ln=1716` が決定的です。** 27 MHzサンプリングでのNTSC 1ライン(15734.264 Hz)は
+**`ln=1716` is the decisive one.** One NTSC line (15734.264 Hz) sampled at 27 MHz is
 
 ```
-27e6 / 15734.264 = 1716.05 サンプル
+27e6 / 15734.264 = 1716.05 samples
 ```
 
-なので、これが安定して出れば **ADCクロック・データバスのビット順・サンプリング位相が同時に正しい**
-ことが証明されます。他の指標ひとつではここまで言えません。
+so a steady 1716 proves at once that **the ADC clock, the data bus's bit order and the sampling
+phase are all right**. No other single figure says that much.
 
-### ボタン
+#### Buttons (probe)
 
-* **S2 (pin 87)** — サンプリング位相を1つ進める。`ln`が出ないときは4通り試します。
-* **S1 (pin 88)** — 同期エッジを起点に生サンプル2048点を16進でダンプします。ビット順を目で
-  確認する用です。同期チップ(低い値が続く)→バックポーチ→映像、という並びが見えるはずです。
+* **S2 (pin 87)**: advance the sampling phase by one. If `ln` does not appear, try all four.
+* **S1 (pin 88)**: dump 2048 raw samples from a sync edge in hex, for checking the bit order by
+  eye. The sync tip (a run of low values), then the back porch, then the picture should be
+  visible.
 
-### 診断用LED(負論理)
+#### Diagnostic LEDs (active low, probe)
 
-| LED | 意味                        |
-| --- | ------------------------- |
-| 0   | ハートビート(設計が動いている)          |
-| 1   | PLLロック                    |
-| 2   | ライン周期が正常範囲                |
-| 3   | 垂直同期を検出                   |
-| 4   | オーバーレンジを検出(入力が大きすぎる)      |
-| 5   | データバスに変化しないビットがある(結線不良など) |
-
-## アナログクランプは既定でOFFです
-
-AD9280のクランプ(CLAMP/CLAMPIN)は**使っていません**。この基板では害の方が大きいためです。
-C2が1uFとAD9280のクランプアンプが想定するより大きく、1パルスごとの過渡がライン長を超えて
-尾を引き、次の同期エッジを壊します。実測:
-
-| クランプ | 結果 |
+| LED | Meaning |
 | --- | --- |
-| OFF(既定) | `ok = lns = 15734`、`vs=60`、`ln=1716` — 完璧 |
-| 同期ロック後にゲート | 良品ライン率 約72%、ロックが1Hzで発振、`vs`が不安定 |
+| 0 | heartbeat (the design is running) |
+| 1 | PLL locked |
+| 2 | line period in range |
+| 3 | vertical sync detected |
+| 4 | over range detected (input too large) |
+| 5 | a data bit never changes (bad wiring and so on) |
 
-クランプ無しでも入力は変換レンジ内に自己バイアスされます(同期チップ98、白は225相当で
-255まで30コードの余裕)。デコーダではバックポーチを測定してデジタルにDC再生します。
-同期チップは黒レベルではないため、その値を映像から引いてはいけません。
+### The analog clamp is off by default
 
-`make clampgated-program` で実験用に戻せます。
+The AD9280's clamp (CLAMP/CLAMPIN) is **not used**: on this board it does more harm than good.
+C2 at 1 µF is larger than the AD9280's clamp amplifier is designed for, so each pulse leaves a
+transient longer than a line, which spoils the next sync edge. Measured:
 
-## 4. 切り分け用のビルド
+| Clamp | Result |
+| --- | --- |
+| off (default) | `ok = lns = 15734`, `vs=60`, `ln=1716`, perfect |
+| gated on sync lock | about 72% good lines, lock oscillating at 1 Hz, `vs` erratic |
 
-アナログ側を疑うときに使います。RTLは同一で、制約かパラメータだけが違います。
+Without the clamp the input still biases itself inside the conversion range (sync tip at 98,
+white at about 225, 30 codes below 255). The decoder measures the porch and restores DC
+digitally. The sync tip is not the black level, so do not subtract it from the picture.
 
-```sh
-make pullup-program    # ADC入力に弱プルアップ。min=max=255ならADCがバスを駆動していない
-make clampon-program   # CLAMPを常時ON。AINがCLAMPINに固定されるので映像入力なしで測れる
-make clampoff-program  # CLAMPを常時OFF(比較用)
-make clkhigh-program   # adc_clkを3.3V固定 → TP4が約3.3Vになるはず
-make clklow-program    # adc_clkを0V固定  → TP4が約0Vになるはず
-make clkslow-program   # adc_clkを約1Hz   → TP4がテスターで0↔3.3Vに振れる
-make program           # 通常動作に戻す
-```
+`make clampgated-program` brings the clamp back for experiments.
 
-レポート末尾の `clk=` が、いまどのクロックモードのビットストリームが載っているかを示します。
+### Builds for isolating faults
 
-### プルテスト — 浮いたピンを基板に触らず特定する
-
-ブリングアップで一番効いた手法です。同じ設計をプル無し/プルアップ/プルダウンの3通りで
-焼いて、報告されるコードを2進で見比べます。**約50kΩの内蔵プルでは、ADCが実際に駆動して
-いるピンは動きません。** プルに追従するビット = はんだが浮いているピン、動かないビット =
-接続OK、と1本ずつ判定できます。
+For suspecting the analog side. The RTL is the same; only a constraint or a parameter differs.
 
 ```sh
-make program && make monitor          # プル無し
-make pullup-program && make monitor   # プルアップ
-make pulldown-program && make monitor # プルダウン
+make pullup-program    # weak pull-ups on the ADC inputs; min=max=255 means the ADC is not driving the bus
+make clampon-program   # CLAMP held on: AIN pinned to CLAMPIN, measurable with no video
+make clampoff-program  # CLAMP held off (for comparison)
+make clkhigh-program   # adc_clk held at 3.3 V → TP4 should read about 3.3 V
+make clklow-program    # adc_clk held at 0 V → TP4 should read about 0 V
+make clkslow-program   # adc_clk at about 1 Hz → TP4 swings 0 ↔ 3.3 V on a meter
+make program           # back to normal
 ```
 
-**重要な罠**: テストポイントが示すのは「ネット」の電圧であって「ピン」の電圧ではありません。
-TP4はAD9280の15番ピンが浮いていても健全なクロックを示しますし、FB2は2番ピンが浮いていても
-3.3Vを示します。プルテストはFPGAが読めるピンについてこれを電気的に回避します。
+`clk=` at the end of the report shows which clock mode the loaded bitstream has.
 
-`clampon` で `min`/`max` が0のままなら、原因は映像信号ではなくADCの変換・基準電圧・
-クランプ回路のいずれかです。`clkslow` でもバスが動かないなら、ADCはクロックに反応して
-いません。
+#### The pull test: finding a floating pin without touching the board
 
-### 電源はAVDDとDRVDDで別々に来ている
+The most effective technique of the bring-up. Build the same design three ways, with no pull,
+pull-up and pull-down, and compare the reported codes in binary. **A ~50 kΩ internal pull cannot
+move a pin the ADC is really driving.** A bit that follows the pull is an open joint; a bit that
+resists it is connected, one pin at a time.
 
-ここは見落としやすい点です。AD9280のアナログ電源とデジタル電源は、**Tang Nanoの別々のピン**
-から供給されています。
-
-```
-Tang Nano DIPパッド19 → +3V3 → FB1 → +3V3A → U1 pin28 AVDD
-Tang Nano DIPパッド25 →        FB2 → +3V3D → U1 pin2  DRVDD
+```sh
+make program && make monitor          # no pull
+make pullup-program && make monitor   # pull-up
+make pulldown-program && make monitor # pull-down
 ```
 
-つまり **TP2(VREF)が正常でもDRVDDが死んでいることはあり得ます**。VREFはAVDD側だけで
-決まるからです。DRVDDが無ければデジタル出力は駆動されず、バスは無反応になります。
-FB1/FB2はリード部品なので両端にテスターを当てやすいです。
+**The trap**: a test point measures the net, not the pin. TP4 shows a healthy clock even if the
+AD9280's pin 15 is lifted, and FB2 shows 3.3 V even if pin 2 is. The pull test gets round this
+electrically for every pin the FPGA can read.
 
-## HDMI出力のハマりどころ
+If `min`/`max` stay at 0 with `clampon`, the cause is not the video signal but the ADC's
+conversion, its reference or the clamp circuit. If the bus does not move with `clkslow` either,
+the ADC is not responding to its clock.
 
-**LVDS25 の制約に `DRIVE=` や `BANK_VCCIO=` を書いてはいけません。** Sipeed の Gowin EDA 用
-`.cst` には `DRIVE=3.5 BANK_VCCIO=3.3` が入っていますが、これをオープンソースフローに
-持ち込むと、ビルドは通りタイミングも完璧なのに**どのシンクもロックしない**信号になります。
-警告も出ません。apicula 公式の `examples/tangnano20k.cst` は `IO_TYPE=LVDS25 PULL_MODE=NONE`
-だけです。
+#### AVDD and DRVDD come from different pins
 
-**20KのHDMIピンは True LVDS です。** 9Kは emulated LVDS なので、`ELVDS_OBUF`/`LVDS25E` を
-そのまま移植すると apicula が明示的に拒否します。`TLVDS_OBUF`/`LVDS25` を使い、P をペアの
-IOBAピン、N を IOBBピンに置きます(33/34, 35/36, 37/38, 39/40)。
+Easy to miss: the AD9280's analog and digital supplies come from **different pins of the Tang
+Nano**.
 
-**`--freq` はピクセルクロックの値を渡します。** nextpnr は `--freq` を知らないクロック全部に
-適用するので、シリアルクロックの値(135)を渡すと TMDS エンコーダの組み合わせ経路に対して
-実在しないタイミング違反で落ちます。
+```
+Tang Nano DIP pad 19 → +3V3 → FB1 → +3V3A → U1 pin 28 AVDD
+Tang Nano DIP pad 25 →        FB2 → +3V3D → U1 pin 2  DRVDD
+```
 
-### 出力が出ないときは既知正常のビットストリームと比べる
+So **a healthy TP2 (VREF) does not prove that DRVDD is there**: VREF depends on AVDD alone.
+Without DRVDD the digital outputs are never driven and the bus is dead. FB1 and FB2 are leaded
+parts, easy to probe at both ends.
 
-推測するより速いです。`gh` で Sipeed 公式のビルド済み `.fs` を落として焼けば、基板・ケーブル・
-シンクが正常かが一発で分かります。さらに apicula の `examples/DVI` を同じフローでビルドすれば、
-「OSSツールチェーンでこの基板のTLVDSは出せる」ことまで確認でき、あとは自分のソースとの差分を
-見るだけになります。
+## HDMI output pitfalls
 
-## よくある問題
+**Never put `DRIVE=` or `BANK_VCCIO=` on an LVDS25 constraint.** Sipeed's `.cst` for Gowin EDA
+carries `DRIVE=3.5 BANK_VCCIO=3.3`; brought into the open-source flow, it builds, meets timing,
+and produces a link **no sink locks to**, with no warning. Apicula's own
+`examples/tangnano20k.cst` uses only `IO_TYPE=LVDS25 PULL_MODE=NONE`.
 
-* **レポートが文字化けする** — macOSは`/dev/cu.*`を最後にcloseした時点で9600 baudに戻します。
-  `stty -f PORT 115200` のあとに `cat PORT` すると設定が失われて化けます。`make monitor`
-  (= `scripts/monitor.py`)は同じディスクリプタ上でbaudを設定するので正しく読めます。
-* **基板が見つからない** — データ通信対応のUSB-Cケーブルを使い、USBハブを外して直結します。
-* **`unable to open ftdi device`** — シリアルモニタなど、基板のUSBデバイスを使用中のアプリを
-  閉じて再接続します。
-* **最初からやり直す** — `make clean` のあと `make build`。
+**The 20K's HDMI pins are true LVDS.** The 9K's are emulated, so `ELVDS_OBUF`/`LVDS25E` ported
+as-is is rejected outright by Apicula. Use `TLVDS_OBUF`/`LVDS25`, with P on the pair's IOBA pin
+and N on its IOBB pin (33/34, 35/36, 37/38, 39/40).
 
-## 配線
+**Pass the pixel clock to `--freq`.** nextpnr applies `--freq` to every clock it does not
+otherwise know, so passing the serial clock (135) fails the TMDS encoder's combinational path on
+a timing violation that does not exist.
 
-ピン割り当ては `constraints/tangnano20k_adc_probe.cst` が唯一の出典です(KiCadのネットリストから
-起こしています)。データバスは物理ピン順に並んでいません。詳細は `CLAUDE.md` を参照してください。
+### When nothing comes out, compare with a known-good bitstream
+
+Faster than reasoning. Load Sipeed's prebuilt `.fs` (fetched with `gh`) and you know at once
+whether the board, cable and sink are fine. Build Apicula's `examples/DVI` with the same flow and
+you also know that the open-source toolchain can drive this board's TLVDS; what is left is the
+difference from your own sources.
+
+## Common problems
+
+* **The report is garbled**: macOS resets a `/dev/cu.*` port to 9600 baud when its last
+  descriptor closes, so `stty -f PORT 115200` followed by `cat PORT` loses the setting.
+  `make monitor` (`scripts/monitor.py`) sets the speed on the descriptor it reads from.
+* **The board is not found**: use a USB-C cable that carries data, and connect directly, without
+  a hub.
+* **`unable to open ftdi device`**: close anything using the board's USB device (a serial
+  monitor, for instance) and reconnect.
+* **Starting over**: `make clean`, then `make build`.
+
+## License
+
+MIT License. See `LICENSE`.

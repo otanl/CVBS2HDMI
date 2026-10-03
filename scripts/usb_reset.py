@@ -10,11 +10,13 @@ observation cost a physical round trip.
 A USB port reset is electrically the same thing and needs no hands.
 """
 import sys
+from pathlib import Path
 import usb.core
 import usb.backend.libusb1
 
-LIB = ("../tang/.tools/oss-cad-suite/lib/"
-       "libusb-1.0.0.dylib")
+# The OSS CAD Suite's libusb, from the repository's .tools (see setup-macos.sh).
+LIB = str(Path(__file__).resolve().parent.parent
+          / ".tools/oss-cad-suite/lib/libusb-1.0.0.dylib")
 
 
 def backend():
