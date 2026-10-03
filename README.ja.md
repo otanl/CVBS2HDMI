@@ -32,6 +32,9 @@ PAL、音声、7.5 IREセットアップの黒レベル補正には対応して�
   - 電源はTang Nano 20Kの3.3 Vから、アナログ・デジタル別系統（フェライトビーズ経由）
 - **任意**：M5Stack Unit 8Angle（Grove J4/J5、I²C）
 
+キャリア基板のKiCad 10プロジェクトは `hardware/` にあります。回路図、PCB、そして実際に製造して
+測定した基板のJLCPCB用製造データ（BOM、部品配置、ガーバー）です。
+
 ピン割り当て（唯一の出典は `constraints/tangnano20k_adc_probe.cst`）：
 
 | 信号 | FPGAピン | | 信号 | FPGAピン |

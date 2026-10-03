@@ -37,6 +37,9 @@ Not supported: PAL, audio, black-level correction for 7.5 IRE setup.
     ferrite beads
 - **Optional**: M5Stack Unit 8Angle (Grove J4/J5, I²C)
 
+The carrier board's KiCad 10 project is in `hardware/`: schematic, PCB, and the JLCPCB
+production files (BOM, placement, gerbers) of the board as built and measured.
+
 Pin assignment (the single source is `constraints/tangnano20k_adc_probe.cst`):
 
 | Signal | FPGA pin | | Signal | FPGA pin |

@@ -2389,7 +2389,13 @@ So the mechanism stays in `burst_nco` with its test, and `ntsc_capture` passes
 cheaper than what fixing them costs everywhere else.  A source with a
 full-amplitude burst would not misfire and should turn it back on.
 
-## Hardware (Verified against `../tangADC.zip` → `tangADC.kicad_sch` + `production/netlist.ipc`)
+## Hardware (Verified against `hardware/tangADC.kicad_sch` and `tangADC.kicad_pcb`)
+
+`hardware/` is the board as built and measured (2026-09-16 layout, the respun pins; DRC: no
+unconnected items, schematic parity clean) with the JLCPCB files it was exported to.  It came
+from `~/Downloads/tangADC_kicad`; the copy at `../tangADC_kicad` has the new schematic but a PCB
+still routed to the old pins 42/41/31, and its routed respin exists only as an unrouted
+placement in KiCad's `.history`.  Edit the board here from now on.
 
 Carrier board `tangADC`: AD9280ARS (U1, SSOP-28) on a DIP-40 socket for the Tang Nano 20K (U2).
 Board is powered from the Tang Nano's own 3V3 (DIP pads 19 and 25) through ferrite beads
