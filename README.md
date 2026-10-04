@@ -4,6 +4,10 @@ English | [日本語](README.ja.md)
 
 **v0.1**
 
+> **Status.** What has been tested is the firmware together with the board as built, v0.1
+> (tag `v0.1`). The board design now in `hardware/` is **v0.2, which has not been manufactured or
+> tested**. If you make a board, either accept that, or use the v0.1 design from the tag.
+
 CVBS2HDMI digitises composite NTSC video (CVBS) with an 8-bit ADC (AD9280), decodes it in colour on the
 Tang Nano 20K's FPGA, and sends it to the on-board HDMI connector as 640×480p. There is no frame
 buffer. Everything is built with an open-source toolchain (Yosys / nextpnr-himbaechel / Apicula /
